@@ -1,0 +1,92 @@
+name: Smoke Test
+
+# Smoke test pós-release (tarefa 6.8): baixa o instalador da release, instala
+# em runner limpo e roda `legendai --smoke-test` — verifica o sidecar ffmpeg, a
+# config e o onboarding SEM baixar modelos e SEM abrir a GUI (headless-safe).
+# Cobertura por runner: Linux (deb), Windows (NSIS, por usuário) e macOS (dmg
+# arm64). Para plataformas sem runner (macOS amd64) e instalação em máquina
+# real, usar o checklist manual em docs/INSTALL.md.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag da release a testar"
+        required: false
+        default: "v0.1.0"
+
+jobs:
+  smoke-linux:
+    name: Linux (deb)
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Download deb da release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --pattern '*.deb' --clobber
+
+      - name: Instalar o pacote
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./*.deb
+
+      - name: Smoke test (ffmpeg + config + onboarding)
+        run: legendai --smoke-test
+
+  smoke-windows:
+    name: Windows (NSIS)
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Download instalador NSIS da release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --pattern '*.exe' --clobber
+
+      - name: Instalação silenciosa (por usuário, sem admin)
+        run: |
+          $installer = Get-ChildItem -Filter '*.exe' | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+
+      - name: Smoke test (ffmpeg + config + onboarding)
+        run: |
+          $candidates = @(
+            "$env:LOCALAPPDATA\Programs\LegendAI\legendai.exe",
+            "$env:LOCALAPPDATA\Programs\legendai\legendai.exe",
+            "$env:LOCALAPPDATA\LegendAI\legendai.exe"
+          )
+          $exe = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error 'legendai.exe não encontrado após a instalação'
+            exit 1
+          }
+          Write-Host "Smoke test binário: $exe"
+          & $exe --smoke-test
+          exit $LASTEXITCODE
+
+  smoke-macos:
+    name: macOS (DMG arm64)
+    runs-on: macos-14
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - name: Download DMG arm64 da release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" --pattern '*_aarch64.dmg' --clobber
+
+      - name: Montar DMG e rodar o smoke test
+        run: |
+          set -e
+          dmg=$(ls *.dmg | head -n 1)
+          hdiutil attach "$dmg" -nobrowse -quiet
+          app=$(ls -d /Volumes/*/LegendAI.app | head -n 1)
+          mnt=$(dirname "$app")
+          trap 'hdiutil detach "$mnt" -quiet 2>/dev/null || true' EXIT
+          echo "Smoke test app: $app"
+          "$app/Contents/MacOS/legendai" --smoke-test

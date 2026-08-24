@@ -1,0 +1,340 @@
+name: Release
+
+# Matriz de builds (variantes por GPU):
+#   - Windows x64: cpu | nvidia (CUDA EP do ORT) | amd-intel (Vulkan do whisper.cpp)
+#   - Linux x64:   cpu | nvidia | amd-intel
+#   - macOS:       apple-silicon (arm64 + Metal) | intel (x86_64 + Metal)
+#   - Snapdragon:  Windows ARM64 (aarch64-pc-windows-msvc, CPU) — best effort,
+#                  `continue-on-error` pois o ecossistema Rust/ORT em Win-ARM64
+#                  ainda é imaturo; falha não bloqueia a release.
+#
+# Nota CUDA: nenhum job instala o CUDA toolkit — igual ao ambiente de dev local
+# (sem nvcc), os deps compilam e a feature `cuda` só troca o binário pré-compilado
+# do ONNX Runtime pela variante GPU (o usuário final precisa dos drivers NVIDIA).
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  windows:
+    name: Windows x64 (${{ matrix.variant }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            features: full
+          - variant: nvidia
+            features: full,cuda
+          - variant: amd-intel
+            features: full,vulkan
+
+    env:
+      # Workaround para o limite de path do MSVC ao compilar ggml-vulkan
+      # (FTK1011, ver whisper-rs #252): desativa FileTracker.
+      TrackFileAccess: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.variant }}
+
+      - name: Install Vulkan SDK (variante amd-intel)
+        if: matrix.variant == 'amd-intel'
+        uses: humbletim/install-vulkan-sdk@v1.1.1
+        with:
+          version: latest
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Fetch ffmpeg/ffprobe sidecars (win64)
+        shell: bash
+        run: bash scripts/fetch-ffmpeg.sh win64
+
+      - name: Build NSIS installer
+        shell: bash
+        run: |
+          # Bundle the ONNX Runtime DLL next to the exe (ort loads "onnxruntime.dll"
+          # from the executable directory). The file is produced by ort's build
+          # script into target/release only when the `ort` feature is compiled, so
+          # it is injected here (Windows release only) instead of in tauri.conf.json,
+          # which would break non-ort builds on every OS.
+          printf '%s' \
+            '{"bundle":{"resources":{"target/release/onnxruntime.dll":"onnxruntime.dll"}}}' \
+            > nsis-extra.json
+          npm run tauri build -- --features ${{ matrix.features }} --config nsis-extra.json
+
+      - name: Rename installer with variant suffix
+        shell: bash
+        run: |
+          # Instaladores da mesma versão teriam o mesmo nome entre variantes;
+          # sufixar evita colisão nos assets da release.
+          cd src-tauri/target/release/bundle/nsis
+          for f in *-setup.exe; do
+            mv "$f" "${f/-setup/-${{ matrix.variant }}-setup}"
+          done
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: legendai-windows-x64-${{ matrix.variant }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.txt
+          if-no-files-found: error
+
+  macos:
+    name: macOS (${{ matrix.name }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: apple-silicon
+            arch: arm64
+            target: aarch64-apple-darwin
+            sidecar: macos-arm64
+          - name: intel
+            arch: amd64
+            target: x86_64-apple-darwin
+            sidecar: macos-amd64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Fetch ffmpeg/ffprobe sidecars (macOS ${{ matrix.arch }})
+        run: bash scripts/fetch-ffmpeg.sh ${{ matrix.sidecar }}
+
+      - name: Build DMG
+        run: |
+          # Metal em ambos os targets (todo hardware Apple suporta). onnxruntime.dll
+          # é Windows-only (ver job windows); macOS usa a shared lib que o build
+          # script do ort coloca junto ao binário. `--target` cross-compila o arch
+          # irmão neste runner, produzindo um .dmg por entrada da matriz.
+          npm run tauri build -- --features full,metal --target ${{ matrix.target }}
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: legendai-macos-${{ matrix.name }}
+          path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  snapdragon:
+    name: Windows ARM64 (Snapdragon)
+    # Best effort (ver nota do topo): não bloqueia a release se falhar.
+    continue-on-error: true
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust (target ARM64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: arm64
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Fetch ffmpeg/ffprobe sidecars (winarm64)
+        shell: bash
+        run: bash scripts/fetch-ffmpeg.sh winarm64
+
+      - name: Build NSIS installer (ARM64, CPU)
+        shell: bash
+        run: |
+          printf '%s' \
+            '{"bundle":{"resources":{"target/aarch64-pc-windows-msvc/release/onnxruntime.dll":"onnxruntime.dll"}}}' \
+            > nsis-extra.json
+          npm run tauri build -- --features full --target aarch64-pc-windows-msvc --config nsis-extra.json
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: legendai-windows-arm64-cpu
+          path: src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+  ubuntu:
+    name: Linux x64 (${{ matrix.variant }})
+    # Oldest still-hosted LTS runner: compiles against glibc 2.35 so the
+    # AppImage/deb run on Ubuntu 22.04 LTS and newer (task 6.3). The ffmpeg
+    # sidecar from fetch-ffmpeg.sh already needs only glibc 2.28; the Rust
+    # binary is the glibc bottleneck, hence the older build environment.
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            features: full
+          - variant: nvidia
+            features: full,cuda
+          - variant: amd-intel
+            features: full,vulkan
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.variant }}
+
+      - name: Install Vulkan SDK (variante amd-intel)
+        if: matrix.variant == 'amd-intel'
+        uses: humbletim/install-vulkan-sdk@v1.1.1
+        with:
+          version: latest
+          cache: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Fetch ffmpeg/ffprobe sidecars (linux64)
+        run: bash scripts/fetch-ffmpeg.sh linux64
+
+      - name: Build AppImage and deb
+        run: |
+          # Linux bundle targets are pinned to appimage+deb (no rpm) via
+          # src-tauri/tauri.linux.conf.json; --bundles makes it explicit here.
+          # onnxruntime.dll injection is Windows-only (see the windows job).
+          npm run tauri build -- --features ${{ matrix.features }} --bundles appimage,deb
+
+      - name: Rename packages with variant suffix
+        run: |
+          # Mesma versão gera o mesmo nome entre variantes; sufixar evita
+          # colisão nos assets da release.
+          cd src-tauri/target/release/bundle
+          V='${{ matrix.variant }}'
+          for f in appimage/*.AppImage; do mv "$f" "${f/.AppImage/-${V}.AppImage}"; done
+          for f in deb/*.deb; do mv "$f" "${f/.deb/-${V}.deb}"; done
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: legendai-linux-appimage-${{ matrix.variant }}
+          path: src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+      - name: Upload deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: legendai-linux-deb-${{ matrix.variant }}
+          path: src-tauri/target/release/bundle/deb/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: [windows, macos, snapdragon, ubuntu]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute SHA256 checksums
+        working-directory: artifacts
+        run: sha256sum * > SHA256SUMS.txt
+
+      - name: Extract release notes for this version
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          python3 - "$VERSION" <<'PY'
+          import re, sys, pathlib
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          # Match "## [<version>]" or "## [Unreleased]" (case-insensitive).
+          pattern = re.compile(r"^## \[(Unreleased|" + re.escape(version) + r")\]\s*$", re.IGNORECASE | re.MULTILINE)
+          match = pattern.search(text)
+          if not match:
+              sys.exit("No CHANGELOG section for " + version)
+          start = match.end()
+          nxt = re.search(r"^## ", text[start:], re.MULTILINE)
+          end = start + nxt.start() if nxt else len(text)
+          pathlib.Path("RELEASE_NOTES.md").write_text(text[start:end].strip() + "\n")
+          PY
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes-file RELEASE_NOTES.md \
+            artifacts/*

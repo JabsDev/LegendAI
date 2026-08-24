@@ -1,0 +1,37 @@
+# Dependencies
+node_modules
+
+# Builds
+/build
+/dist
+
+# Rust
+/target
+
+# Tauri
+/src-tauri/binaries/*
+!/src-tauri/binaries/README.md
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Secrets
+.secrets/
+
+# OS
+.DS_Store
+
+# Editor
+.idea/
+*.swp
+
+# Mídia de teste local (yt-dlp) — nunca commitar
+*.mp4
+*.mp4.part
+*.ytdl
+*.srt

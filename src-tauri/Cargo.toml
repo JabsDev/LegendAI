@@ -1,0 +1,66 @@
+[package]
+name = "legendai"
+version = "0.1.0"
+description = "Gera legendas sincronizadas com IA 100% local (Whisper + tradução)"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "legendai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+# bench_hy usa o módulo `translate::llm` (gated por `llama`) — só compila com a feature.
+[[example]]
+name = "bench_hy"
+required-features = ["llama"]
+
+# Backends pesados (STT/tradução/GPU) ficam atrás de features para build rápido em dev.
+[features]
+default = ["stt"]
+
+stt = ["dep:whisper-rs"]
+llama = []
+ort = ["dep:ort", "dep:tokenizers"]
+
+# whisper-rs fica em CPU (use_gpu=false no código): o `cuda` do whisper.cpp colide com os
+# símbolos `ggml_cuda_*` do llama.cpp no link (o `compat` do llama_cpp só renomeia símbolos CPU).
+cuda = [ "ort?/cuda"]
+metal = ["whisper-rs?/metal"]
+vulkan = ["whisper-rs?/vulkan"]
+
+full = ["stt", "llama", "ort"]
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+dirs = "6"
+thiserror = "2"
+reqwest = { version = "0.13", features = ["json", "stream"] }
+futures-util = "0.3"
+tokio-util = "0.7"
+sha2 = "0.11"
+hf-hub = { version = "1.0.0", features = ["blocking"] }
+whisper-rs = { version = "0.16", optional = true }
+ort = { version = "2.0.0-rc.13", optional = true }
+tokenizers = { version = "0.23", optional = true }
+tracing-appender = "0.2.5"
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+parakeet-rs = { version = "0.3.7", features = ["cuda"] }
+llama-cpp-4 = { version = "0.6.1", features = ["cuda"] }
