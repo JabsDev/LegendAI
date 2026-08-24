@@ -54,6 +54,15 @@ jobs:
           key: windows-${{ matrix.variant }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: windows-${{ matrix.variant }}-
 
+      - name: Install CUDA toolkit (variante nvidia)
+        # `--features cuda` ativa o build CUDA do llama.cpp (GGML_CUDA), que
+        # exige nvcc; o runner não tem o toolkit instalado por padrão.
+        if: matrix.variant == 'nvidia'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '13.2.0'
+          log-file-suffix: windows-${{ matrix.variant }}
+
       - name: Install Vulkan SDK (variante amd-intel)
         if: matrix.variant == 'amd-intel'
         uses: humbletim/install-vulkan-sdk@v1.2
@@ -254,7 +263,8 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libgtk-3-dev \
-            patchelf
+            patchelf \
+            libvulkan-dev
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -268,6 +278,15 @@ jobs:
             src-tauri/target
           key: ubuntu-${{ matrix.variant }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: ubuntu-${{ matrix.variant }}-
+
+      - name: Install CUDA toolkit (variante nvidia)
+        # `--features cuda` ativa o build CUDA do llama.cpp (GGML_CUDA), que
+        # exige nvcc; o runner não tem o toolkit instalado por padrão.
+        if: matrix.variant == 'nvidia'
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '13.2.0'
+          log-file-suffix: linux-${{ matrix.variant }}
 
       - name: Install Vulkan SDK (variante amd-intel)
         if: matrix.variant == 'amd-intel'

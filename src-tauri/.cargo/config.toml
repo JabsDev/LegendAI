@@ -1,0 +1,6 @@
+# whisper.cpp/ggml usa std::filesystem (path/u8string), introduzido no macOS
+# 10.15. O cmake crate não herda MACOSX_DEPLOYMENT_TARGET do ambiente do
+# runner de forma confiável; forçar aqui garante que todo build script veja.
+[env]
+MACOSX_DEPLOYMENT_TARGET = "11.0"
+CMAKE_OSX_DEPLOYMENT_TARGET = "11.0"
