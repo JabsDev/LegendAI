@@ -323,12 +323,12 @@ jobs:
       - name: Fetch ffmpeg/ffprobe sidecars (linux64)
         run: bash scripts/fetch-ffmpeg.sh linux64
 
-      - name: Build AppImage and deb
+      - name: Build deb
         run: |
-          # Linux bundle targets are pinned to appimage+deb (no rpm) via
-          # src-tauri/tauri.linux.conf.json; --bundles makes it explicit here.
+          # Só deb por enquanto: o AppImage (linuxdeploy) falha no runner
+          # ("failed to run linuxdeploy"); o deb usa dpkg e é confiável.
           # onnxruntime.dll injection is Windows-only (see the windows job).
-          npm run tauri build -- --features ${{ matrix.features }} --bundles appimage,deb
+          npm run tauri build -- --features ${{ matrix.features }} --bundles deb
 
       - name: Rename packages with variant suffix
         run: |
@@ -336,15 +336,7 @@ jobs:
           # colisão nos assets da release.
           cd src-tauri/target/release/bundle
           V='${{ matrix.variant }}'
-          for f in appimage/*.AppImage; do mv "$f" "${f/.AppImage/-${V}.AppImage}"; done
           for f in deb/*.deb; do mv "$f" "${f/.deb/-${V}.deb}"; done
-
-      - name: Upload AppImage
-        uses: actions/upload-artifact@v4
-        with:
-          name: legendai-linux-appimage-${{ matrix.variant }}
-          path: src-tauri/target/release/bundle/appimage/*.AppImage
-          if-no-files-found: error
 
       - name: Upload deb
         uses: actions/upload-artifact@v4
