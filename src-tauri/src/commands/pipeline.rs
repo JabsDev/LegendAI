@@ -282,6 +282,7 @@ fn run_job(
                 job_id,
                 &format!("transcrevendo com backend {:?}", stt.backend),
             );
+            #[cfg(feature = "parakeet")]
             let use_cuda = hw
                 .gpu
                 .is_some_and(|g| g == crate::hardware::detect::GpuKind::Cuda);
@@ -564,6 +565,7 @@ struct ResolvedStt {
     /// Arquivo principal (Whisper ggml/gguf).
     main_path: std::path::PathBuf,
     /// Diretório do modelo (Parakeet: encoder/decoder/vocab juntos).
+    #[cfg(feature = "parakeet")]
     model_dir: std::path::PathBuf,
 }
 
@@ -602,6 +604,7 @@ fn resolve_stt_model(config: &AppConfig) -> Result<ResolvedStt, ErrorDetail> {
             hint: Some("Selecione um Whisper/Parakeet na aba Modelos, ou aguarde o suporte a Canary/Nemotron."),
         });
     }
+    #[cfg(feature = "parakeet")]
     let dir = cache::model_dir(model).map_err(|e| ErrorDetail {
         code: STT_MODEL_UNAVAILABLE,
         message: format!("cache do modelo `{id}`: {e}"),
@@ -615,6 +618,7 @@ fn resolve_stt_model(config: &AppConfig) -> Result<ResolvedStt, ErrorDetail> {
     Ok(ResolvedStt {
         backend,
         main_path,
+        #[cfg(feature = "parakeet")]
         model_dir: dir,
     })
 }

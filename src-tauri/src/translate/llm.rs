@@ -127,8 +127,7 @@ impl LlmEngine {
         // Amostragem determinística (greedy): evita divagações de reasoning na saída.
         let sampler = LlamaSampler::chain_simple([LlamaSampler::greedy()]);
         let mut out: Vec<u8> = Vec::new();
-        let mut pos = tokens.len() as i32;
-        for _ in 0..max_tokens {
+        for pos in (tokens.len() as i32..).take(max_tokens) {
             let token = sampler.sample(&ctx, batch.n_tokens() - 1);
             if self.model.is_eog_token(token) {
                 break;
@@ -144,7 +143,6 @@ impl LlmEngine {
                 .map_err(|e| TranslateError::Backend(format!("falha ao gerar: {e}")))?;
             ctx.decode(&mut batch)
                 .map_err(|e| TranslateError::Backend(format!("falha ao decodificar: {e}")))?;
-            pos += 1;
         }
         Ok(String::from_utf8_lossy(&out).into_owned())
     }
