@@ -45,10 +45,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
         with:
-          workspaces: src-tauri -> target
-          key: ${{ matrix.variant }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: windows-${{ matrix.variant }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: windows-${{ matrix.variant }}-
 
       - name: Install Vulkan SDK (variante amd-intel)
         if: matrix.variant == 'amd-intel'
@@ -128,10 +132,14 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
         with:
-          workspaces: src-tauri -> target
-          key: ${{ matrix.target }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: macos-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: macos-${{ matrix.target }}-
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -176,10 +184,14 @@ jobs:
           targets: aarch64-pc-windows-msvc
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
         with:
-          workspaces: src-tauri -> target
-          key: arm64
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: win-arm64-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: win-arm64-
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -235,10 +247,14 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: actions/cache@v4
         with:
-          workspaces: src-tauri -> target
-          key: ${{ matrix.variant }}
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ubuntu-${{ matrix.variant }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ubuntu-${{ matrix.variant }}-
 
       - name: Install Vulkan SDK (variante amd-intel)
         if: matrix.variant == 'amd-intel'

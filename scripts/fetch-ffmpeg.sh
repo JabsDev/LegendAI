@@ -10,19 +10,23 @@
 #   macos-*        : https://ffmpeg.martin-riedl.de — builds estáticos assinadas
 #                    para darwin arm64 e amd64 (o BtbN não publica darwin;
 #                    fonte definida na tarefa 6.2).
+# Compatível com bash 3.2 (macOS) — sem associative arrays.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEST="$ROOT/src-tauri/binaries"
 mkdir -p "$DEST"
 
-declare -A TRIPLE=(
-  [linux64]=x86_64-unknown-linux-gnu
-  [win64]=x86_64-pc-windows-msvc
-  [winarm64]=aarch64-pc-windows-msvc
-  [macos-arm64]=aarch64-apple-darwin
-  [macos-amd64]=x86_64-apple-darwin
-)
+get_triple() {
+  case "$1" in
+    linux64) echo "x86_64-unknown-linux-gnu" ;;
+    win64) echo "x86_64-pc-windows-msvc" ;;
+    winarm64) echo "aarch64-pc-windows-msvc" ;;
+    macos-arm64) echo "aarch64-apple-darwin" ;;
+    macos-amd64) echo "x86_64-apple-darwin" ;;
+    *) echo "" ;;
+  esac
+}
 
 HOST_OS="$(uname -s)"
 case "$HOST_OS" in
@@ -33,7 +37,7 @@ case "$HOST_OS" in
 esac
 
 PLAT="${1:-$DEFAULT}"
-TRIP="${TRIPLE[$PLAT]:-}"
+TRIP="$(get_triple "$PLAT")"
 [ -z "$TRIP" ] && { echo "Erro: plataforma desconhecida '$PLAT' (use linux64|win64|winarm64|macos-arm64|macos-amd64)." >&2; exit 1; }
 
 TMP="$(mktemp -d)"
