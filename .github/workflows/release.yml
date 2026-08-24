@@ -132,10 +132,15 @@ jobs:
             arch: arm64
             target: aarch64-apple-darwin
             sidecar: macos-arm64
+            features: full,metal
           - name: intel
             arch: amd64
             target: x86_64-apple-darwin
             sidecar: macos-amd64
+            # onnxruntime (ort) não publica build x86_64-apple-darwin
+            # ("no prebuilt binaries available"); Intel Mac fica sem NLLB,
+            # mantendo Whisper (stt) + LLM (llama) + Metal.
+            features: stt,llama,metal
 
     steps:
       - name: Checkout
@@ -174,7 +179,7 @@ jobs:
           # é Windows-only (ver job windows); macOS usa a shared lib que o build
           # script do ort coloca junto ao binário. `--target` cross-compila o arch
           # irmão neste runner, produzindo um .dmg por entrada da matriz.
-          npm run tauri build -- --features full,metal --target ${{ matrix.target }}
+          npm run tauri build -- --features ${{ matrix.features }} --target ${{ matrix.target }}
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
