@@ -234,6 +234,12 @@ jobs:
     # símbolos __isoc23_* (glibc >= 2.38) que não existem no 22.04 (2.35),
     # causando `undefined symbol` no link. AppImage/deb rodam em 24.04+.
     runs-on: ubuntu-24.04
+    env:
+      # linuxdeploy falha sem FUSE e com strip em binários Rust com libs
+      # dinâmicas no runner; APPIMAGE_EXTRACT_AND_RUN extrai e executa, e
+      # NO_STRIP evita o strip que quebra o link do onnxruntime estático.
+      APPIMAGE_EXTRACT_AND_RUN: "1"
+      NO_STRIP: "true"
     strategy:
       fail-fast: false
       matrix:
