@@ -126,6 +126,9 @@ jobs:
   macos:
     name: macOS (${{ matrix.name }})
     runs-on: macos-latest
+    # Intel (x86_64) é legado e o cross-compile do llama.cpp falha
+    # (OpenMP/httplib/OpenSSL) — best-effort; o Apple Silicon é obrigatório.
+    continue-on-error: ${{ matrix.name == 'intel' }}
     env:
       # whisper.cpp/ggml usa std::filesystem (path/u8string), introduzido no
       # macOS 10.15; sem esse piso o clang falha com "'path' is unavailable".
