@@ -36,6 +36,11 @@ jobs:
       # Workaround para o limite de path do MSVC ao compilar ggml-vulkan
       # (FTK1011, ver whisper-rs #252): desativa FileTracker.
       TrackFileAccess: false
+      # LNK2038 MT_StaticRelease vs MD_DynamicRelease: o onnxruntime (ort),
+      # tokenizers e esaxx compilam com /MT (runtime estático), mas o
+      # llama.cpp por padrão usa /MD. LLAMA_STATIC_CRT=1 alinha o llama
+      # com /MT e resolve o mismatch no link.
+      LLAMA_STATIC_CRT: "1"
 
     steps:
       - name: Checkout
