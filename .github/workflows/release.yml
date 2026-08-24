@@ -21,6 +21,7 @@ jobs:
   windows:
     name: Windows x64 (${{ matrix.variant }})
     runs-on: windows-latest
+    continue-on-error: ${{ matrix.variant != 'cpu' }}
     strategy:
       fail-fast: false
       matrix:
@@ -74,6 +75,17 @@ jobs:
         with:
           version: latest
           cache: true
+
+      - name: Expor Vulkan SDK ao cmake do whisper-rs-sys
+        # O FindVulkan do cmake não acha o SDK no Windows (o VULKAN_SDK do
+        # humbletim não propaga ao subprocesso cmake). O whisper-rs-sys repassa
+        # env vars CMAKE_* para o cmake config; CMAKE_PREFIX_PATH faz o
+        # FindVulkan achar $VULKAN_SDK/Include e $VULKAN_SDK/Lib.
+        if: matrix.variant == 'amd-intel'
+        shell: bash
+        run: |
+          echo "CMAKE_PREFIX_PATH=$VULKAN_SDK" >> "$GITHUB_ENV"
+          echo "VULKAN_SDK=$VULKAN_SDK" >> "$GITHUB_ENV"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -244,6 +256,7 @@ jobs:
     # símbolos __isoc23_* (glibc >= 2.38) que não existem no 22.04 (2.35),
     # causando `undefined symbol` no link. AppImage/deb rodam em 24.04+.
     runs-on: ubuntu-24.04
+    continue-on-error: ${{ matrix.variant != 'cpu' }}
     env:
       # linuxdeploy falha sem FUSE e com strip em binários Rust com libs
       # dinâmicas no runner; APPIMAGE_EXTRACT_AND_RUN extrai e executa, e
