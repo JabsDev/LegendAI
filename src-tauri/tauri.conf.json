@@ -42,7 +42,7 @@
     "windows": {
       "nsis": {
         "installMode": "currentUser",
-        "languages": ["English", "BrazilianPortuguese"]
+        "languages": ["English"]
       }
     },
     "macOS": {
