@@ -28,6 +28,7 @@ use crate::model_manager::{cache, catalog};
 use crate::pipeline::steps::{PipelineFinished, PipelineProgress, PipelineStep, PipelineSummary};
 use crate::pipeline::stt_pipeline::{clamp_to_audio, formatted_to_subtitles};
 use crate::pipeline::{load_embedded_subtitle, run_translate, run_translate_with_engine_progress};
+#[cfg(feature = "parakeet")]
 use crate::stt::parakeet::ParakeetModel;
 use crate::stt::{SttOptions, WhisperModel};
 use crate::subtitles::srt::{parse_srt, to_srt};
@@ -309,6 +310,7 @@ fn run_job(
                     drop(model);
                     t
                 }
+                #[cfg(feature = "parakeet")]
                 catalog::Backend::Parakeet => {
                     ensure_not_cancelled(token)?;
                     let mut model = ParakeetModel::load(&stt.model_dir, threads, use_cuda)
@@ -322,6 +324,12 @@ fn run_job(
                     })?;
                     drop(model);
                     t
+                }
+                #[cfg(not(feature = "parakeet"))]
+                catalog::Backend::Parakeet => {
+                    return Err(job_error(
+                        "backend Parakeet não compilado neste build (feature `parakeet` ausente)".into(),
+                    ))
                 }
                 catalog::Backend::Canary | catalog::Backend::Nemotron => {
                     return Err(job_error(format!(

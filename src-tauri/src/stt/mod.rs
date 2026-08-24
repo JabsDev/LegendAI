@@ -1,3 +1,4 @@
+#[cfg(feature = "parakeet")]
 pub mod parakeet;
 pub mod whisper;
 
@@ -7,6 +8,7 @@ pub use whisper::{SttError, SttOptions, Transcription, WhisperModel};
 use crate::errors::LegendaiError;
 
 /// Classifica um [`ParakeetError`] em um [`LegendaiError`] de código estável.
+#[cfg(feature = "parakeet")]
 impl From<parakeet::ParakeetError> for LegendaiError {
     fn from(e: parakeet::ParakeetError) -> Self {
         match e {

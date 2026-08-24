@@ -30,6 +30,9 @@ default = ["stt"]
 stt = ["dep:whisper-rs"]
 llama = []
 ort = ["dep:ort", "dep:tokenizers"]
+# Parakeet (STT via ONNX) depende de ort; opcional para plataformas onde o
+# onnxruntime não tem prebuilt (ex: macOS Intel) compilarem sem ele.
+parakeet = ["dep:parakeet-rs", "ort"]
 
 # whisper-rs fica em CPU (use_gpu=false no código): o `cuda` do whisper.cpp colide com os
 # símbolos `ggml_cuda_*` do llama.cpp no link (o `compat` do llama_cpp só renomeia símbolos CPU).
@@ -38,7 +41,7 @@ cuda = ["ort?/cuda", "parakeet-rs/cuda", "llama-cpp-4/cuda"]
 metal = ["whisper-rs?/metal"]
 vulkan = ["whisper-rs?/vulkan"]
 
-full = ["stt", "llama", "ort"]
+full = ["stt", "llama", "ort", "parakeet"]
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
@@ -63,5 +66,5 @@ ort = { version = "2.0.0-rc.13", optional = true }
 tokenizers = { version = "0.23", optional = true }
 tracing-appender = "0.2.5"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
-parakeet-rs = { version = "0.3.7" }
+parakeet-rs = { version = "0.3.7", optional = true }
 llama-cpp-4 = { version = "0.6.1" }
