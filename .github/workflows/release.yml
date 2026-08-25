@@ -66,21 +66,21 @@ jobs:
 
       - name: Install Vulkan SDK (variante amd-intel)
         if: matrix.variant == 'amd-intel'
-        uses: humbletim/install-vulkan-sdk@v1.2
-        with:
-          version: latest
-          cache: true
-
-      - name: Expor Vulkan SDK ao cmake do whisper-rs-sys
-        # O FindVulkan do cmake não acha o SDK no Windows (o VULKAN_SDK do
-        # humbletim não propaga ao subprocesso cmake). O whisper-rs-sys repassa
-        # env vars CMAKE_* para o cmake config; CMAKE_PREFIX_PATH faz o
-        # FindVulkan achar $VULKAN_SDK/Include e $VULKAN_SDK/Lib.
-        if: matrix.variant == 'amd-intel'
         shell: bash
         run: |
-          echo "CMAKE_PREFIX_PATH=$VULKAN_SDK" >> "$GITHUB_ENV"
-          echo "VULKAN_SDK=$VULKAN_SDK" >> "$GITHUB_ENV"
+          # O humbletim/install-vulkan-sdk extrai o instalador com 7z e, no
+          # Windows, o SDK fica incompleto (só `Bin/`, sem `Include/` e `Lib/`)
+          # -> o FindVulkan do CMake 4.x não acha nada e o whisper-rs-sys falha
+          # com "Could NOT find Vulkan". Usamos o instalador oficial em modo
+          # silencioso, que instala o SDK completo em C:\VulkanSDK\<versão>.
+          VERSION=$(curl -sL https://vulkan.lunarg.com/sdk/latest/windows.txt)
+          echo "Instalando Vulkan SDK $VERSION"
+          curl -sL -o /tmp/vulkan_sdk.exe "https://sdk.lunarg.com/sdk/download/$VERSION/windows/vulkan_sdk.exe?Human=true"
+          /tmp/vulkan_sdk.exe --accept-licenses --default-answer --confirm-command install
+          SDK_DIR="$(ls -d /c/VulkanSDK/* 2>/dev/null | head -1)"
+          echo "VULKAN_SDK=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "Vulkan SDK instalado em: $SDK_DIR"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -95,22 +95,45 @@ jobs:
         shell: bash
         run: bash scripts/fetch-ffmpeg.sh win64
 
+      - name: Prepare native DLL staging dir
+        shell: bash
+        run: mkdir -p src-tauri/binaries/native
+
+      - name: Build app without bundle (gera as DLLs de runtime em target/release)
+        shell: bash
+        run: |
+          # 1a fase: compila sem empacotar. Os build scripts das dependências
+          # (ort-sys copy_dylibs e llama-cpp-sys-4) geram onnxruntime.dll,
+          # DirectML.dll, llama.dll e ggml-*.dll em target/release, ao lado do
+          # exe. O bundle.resources de src-tauri/tauri.windows.conf.json aponta
+          # para o diretório estável `binaries/native` (vazio nesta fase) e
+          # tauri-build simplesmente o ignora.
+          npm run tauri build -- --no-bundle --features ${{ matrix.features }}
+
+      - name: Stage runtime DLLs como arquivos reais (segue symlinks)
+        shell: bash
+        run: |
+          # As DLLs do onnxruntime são criadas pelo ort-sys como SYMLINKs para
+          # $CARGO_HOME/registry em target/release (o runner roda como admin e a
+          # criação de symlink não cai no fallback de cópia). Se o
+          # bundle.resources fizesse o tauri-build ler essas DLLs via glob em
+          # target/release, ele executaria fs::copy(src=destino do symlink,
+          # dst=o próprio symlink) e o Windows falharia com "os error 32"
+          # (sharing violation — abrir o mesmo arquivo para leitura e escrita).
+          #
+          # Copiamos seguindo o symlink (cp -L) para o diretório estável e
+          # removemos os symlinks do target/release, evitando a auto-cópia.
+          cp -L src-tauri/target/release/*.dll src-tauri/binaries/native/
+          rm -f src-tauri/target/release/*.dll
+
       - name: Build NSIS installer
         shell: bash
         run: |
-          # ort 2.0.0-rc.13 linka o onnxruntime estaticamente e o build script
-          # (copy_dylibs) já coloca onnxruntime.dll ao lado do exe; não precisa
-          # embarcar via bundle.resources (o recurso manual apontava para um
-          # caminho que não existia -> "resource path ... doesn't exist").
-          #
-          # llama.cpp é linkado como DLL dinâmica (feature `dynamic-link` default
-          # do llama-cpp-4): o build script do llama-cpp-sys-4 gera llama.dll +
-          # ggml-*.dll em target/release ao lado do exe. Sem embarcá-las, o
-          # instalador quebra com "llama.dll não encontrada" em máquina limpa.
-          # O empacotamento é feito pelo config específico de Windows
-          # (src-tauri/tauri.windows.conf.json) via bundle.resources (glob
-          # `target/**/release/*.dll`), cobrindo cpu/cuda/vulkan e ARM64 sem
-          # enumerar nomes.
+          # 2a fase: o touch no config força o build script (tauri-build) a rodar
+          # de novo; ele copia binaries/native/*.dll (arquivos reais) para junto
+          # do exe e o tauri-bundler embarca as DLLs no instalador NSIS.
+          # Isso cobre cpu/cuda/vulkan e ARM64 sem enumerar nomes.
+          touch src-tauri/tauri.windows.conf.json
           npm run tauri build -- --features ${{ matrix.features }}
 
       - name: Rename installer with variant suffix
@@ -244,6 +267,10 @@ jobs:
       - name: Fetch ffmpeg/ffprobe sidecars (winarm64)
         shell: bash
         run: bash scripts/fetch-ffmpeg.sh winarm64
+
+      - name: Prepare native DLL staging dir
+        shell: bash
+        run: mkdir -p src-tauri/binaries/native
 
       - name: Build NSIS installer (ARM64, CPU)
         shell: bash

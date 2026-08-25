@@ -41,6 +41,22 @@ e o versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   do exe (via `tauri.windows.conf.json` → `bundle.resources`). Antes o app
   instalado falhava com "llama.dll não encontrada" porque o llama.cpp é
   linkado dinamicamente (`dynamic-link` default do `llama-cpp-4`).
+- **Release Windows (build):** o build dos instaladores NSIS voltou a funcionar
+  no CI. O glob `target/**/release/*.dll` em `bundle.resources` fazia o
+  `tauri-build` tentar copiar as DLLs do onnxruntime que o `ort-sys` cria como
+  **symlinks** para `$CARGO_HOME/registry`; o `fs::copy` recaía sobre o próprio
+  symlink e o Windows falhava com "os error 32" (sharing violation) — todos os
+  jobs `windows` quebravam e o release ficava sem `.exe`. O workflow agora
+  compila sem bundle, copia as DLLs como arquivos reais para
+  `src-tauri/binaries/native/` (`cp -L`, seguindo o symlink) e só então
+  gera o NSIS.
+- **Release Windows (variante amd-intel/Vulkan):** o `humbletim/install-vulkan-sdk`
+  extrai o instalador com 7z e, no Windows, o SDK fica incompleto (só `Bin/`,
+  sem `Include/`/`Lib/`) — o `FindVulkan` do CMake falhava no `whisper-rs-sys`.
+  O job agora usa o instalador oficial do SDK em modo silencioso (SDK completo
+  em `C:\VulkanSDK\<versão>`). A variante segue `best-effort`: o
+  `vulkan-shaders-gen` do whisper.cpp/ggml quebra no runner com o generator
+  Visual Studio (bug do próprio whisper.cpp) — não bloqueia a release.
 
 ### Security
 
