@@ -102,6 +102,15 @@ jobs:
           # (copy_dylibs) já coloca onnxruntime.dll ao lado do exe; não precisa
           # embarcar via bundle.resources (o recurso manual apontava para um
           # caminho que não existia -> "resource path ... doesn't exist").
+          #
+          # llama.cpp é linkado como DLL dinâmica (feature `dynamic-link` default
+          # do llama-cpp-4): o build script do llama-cpp-sys-4 gera llama.dll +
+          # ggml-*.dll em target/release ao lado do exe. Sem embarcá-las, o
+          # instalador quebra com "llama.dll não encontrada" em máquina limpa.
+          # O empacotamento é feito pelo config específico de Windows
+          # (src-tauri/tauri.windows.conf.json) via bundle.resources (glob
+          # `target/**/release/*.dll`), cobrindo cpu/cuda/vulkan e ARM64 sem
+          # enumerar nomes.
           npm run tauri build -- --features ${{ matrix.features }}
 
       - name: Rename installer with variant suffix

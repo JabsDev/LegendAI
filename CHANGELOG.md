@@ -35,6 +35,13 @@ e o versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 - **Empacotamento:** installers NSIS (Windows), DMG (macOS arm64/amd64) e
   AppImage/`.deb` (Linux) com sidecar ffmpeg.
 
+### Fixed
+
+- **Windows:** instalador NSIS agora embarca `llama.dll` + `ggml-*.dll` ao lado
+  do exe (via `tauri.windows.conf.json` → `bundle.resources`). Antes o app
+  instalado falhava com "llama.dll não encontrada" porque o llama.cpp é
+  linkado dinamicamente (`dynamic-link` default do `llama-cpp-4`).
+
 ### Security
 
 - Erros tipados com códigos estáveis para a UI, sem expor caminhos internos.
