@@ -9,6 +9,12 @@ e o versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Added
 
+- Nada pendente.
+
+## [v0.1.12] - 2026-08-30
+
+### Added
+
 - **Transcrição STT (Whisper):**
   - Extração de áudio WAV 16kHz mono via sidecar ffmpeg e listagem/seleção de
     trilhas de áudio via ffprobe.
@@ -47,16 +53,22 @@ e o versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   **symlinks** para `$CARGO_HOME/registry`; o `fs::copy` recaía sobre o próprio
   symlink e o Windows falhava com "os error 32" (sharing violation) — todos os
   jobs `windows` quebravam e o release ficava sem `.exe`. O workflow agora
-  compila sem bundle, copia as DLLs como arquivos reais para
-  `src-tauri/binaries/native/` (`cp -L`, seguindo o symlink) e só então
-  gera o NSIS.
+  compila sem bundle, usa `nullglob` + verificacao e copia as DLLs como arquivos
+  reais para `src-tauri/binaries/native/` (`cp -L`) e só então gera o NSIS.
 - **Release Windows (variante amd-intel/Vulkan):** o `humbletim/install-vulkan-sdk`
   extrai o instalador com 7z e, no Windows, o SDK fica incompleto (só `Bin/`,
   sem `Include/`/`Lib/`) — o `FindVulkan` do CMake falhava no `whisper-rs-sys`.
   O job agora usa o instalador oficial do SDK em modo silencioso (SDK completo
-  em `C:\VulkanSDK\<versão>`). A variante segue `best-effort`: o
-  `vulkan-shaders-gen` do whisper.cpp/ggml quebra no runner com o generator
-  Visual Studio (bug do próprio whisper.cpp) — não bloqueia a release.
+  em `C:\VulkanSDK\<versão>`) com retry e validacao, tratando falhas como warning
+  (best-effort).
+- **Release (macOS intel):** cross `x86_64` em runner `arm64` falhava no link de
+  `libllama-common.dylib` com `_ERR_*` indefinidos (cpp-httplib TLS sem
+  `OpenSSL` para o target); `LLAMA_CURL=OFF` via `CMAKE_ARGS` remove a
+  dependencia.
+- **Release (Windows ARM64 Snapdragon):** `MSVC is not supported for ARM` no
+  `whisper-rs-sys`/`llama-cpp-sys`; jobs agora exigem `clang` (`CC/CXX` +
+  `CMAKE_GENERATOR=Ninja`) e two-phase build, restaurando geracao de `.exe`
+  `ARM64` (best-effort).
 
 ### Security
 
