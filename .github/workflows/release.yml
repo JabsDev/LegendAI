@@ -73,14 +73,30 @@ jobs:
           # -> o FindVulkan do CMake 4.x não acha nada e o whisper-rs-sys falha
           # com "Could NOT find Vulkan". Usamos o instalador oficial em modo
           # silencioso, que instala o SDK completo em C:\VulkanSDK\<versão>.
-          VERSION=$(curl -sL https://vulkan.lunarg.com/sdk/latest/windows.txt)
+          set -e
+          VERSION=$(curl -sL --retry 3 https://vulkan.lunarg.com/sdk/latest/windows.txt || echo "1.4.313.0")
           echo "Instalando Vulkan SDK $VERSION"
-          curl -sL -o /tmp/vulkan_sdk.exe "https://sdk.lunarg.com/sdk/download/$VERSION/windows/vulkan_sdk.exe?Human=true"
-          /tmp/vulkan_sdk.exe --accept-licenses --default-answer --confirm-command install
+          # `sdk.lunarg.com` redireciona para S3; `Human=true` é exigido pelo endpoint
+          if ! curl -sL --retry 3 -o /tmp/vulkan_sdk.exe "https://sdk.lunarg.com/sdk/download/$VERSION/windows/vulkan_sdk.exe?Human=true"; then
+            echo "::warning::Falha ao baixar Vulkan SDK $VERSION"
+            exit 0
+          fi
+          # Instalador oficial silencioso; pode falhar em runner com restrições — não bloqueia release (best-effort)
+          if ! /tmp/vulkan_sdk.exe --accept-licenses --default-answer --confirm-command install; then
+            echo "::warning::Instalador Vulkan SDK falhou — variante amd-intel ficará sem aceleração"
+            exit 0
+          fi
           SDK_DIR="$(ls -d /c/VulkanSDK/* 2>/dev/null | head -1)"
+          if [ -z "$SDK_DIR" ]; then
+            echo "::warning::SDK instalado mas C:/VulkanSDK não encontrado"
+            ls -R /c/VulkanSDK 2>&1 | head -n 30 || true
+            exit 0
+          fi
           echo "VULKAN_SDK=$SDK_DIR" >> "$GITHUB_ENV"
           echo "CMAKE_PREFIX_PATH=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "VK_SDK_PATH=$SDK_DIR" >> "$GITHUB_ENV"
           echo "Vulkan SDK instalado em: $SDK_DIR"
+          ls -lh "$SDK_DIR/Include/vulkan" 2>&1 | head -n 20 || ls -lh "$SDK_DIR" | head -n 30
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -97,7 +113,9 @@ jobs:
 
       - name: Prepare native DLL staging dir
         shell: bash
-        run: mkdir -p src-tauri/binaries/native
+        run: |
+          rm -rf src-tauri/binaries/native
+          mkdir -p src-tauri/binaries/native
 
       - name: Build app without bundle (gera as DLLs de runtime em target/release)
         shell: bash
@@ -123,8 +141,17 @@ jobs:
           #
           # Copiamos seguindo o symlink (cp -L) para o diretório estável e
           # removemos os symlinks do target/release, evitando a auto-cópia.
-          cp -L src-tauri/target/release/*.dll src-tauri/binaries/native/
-          rm -f src-tauri/target/release/*.dll
+          shopt -s nullglob
+          dlls=(src-tauri/target/release/*.dll)
+          if [ ${#dlls[@]} -eq 0 ]; then
+            echo "Nenhuma DLL encontrada em target/release (pode ser build sem ort/llama)"
+          else
+            echo "Staging ${#dlls[@]} DLL(s) para binaries/native/"
+            cp -L "${dlls[@]}" src-tauri/binaries/native/
+            # Remover apenas symlinks/DLLs após cópia bem-sucedida
+            rm -f src-tauri/target/release/*.dll
+            ls -lh src-tauri/binaries/native/
+          fi
 
       - name: Build NSIS installer
         shell: bash
@@ -215,6 +242,17 @@ jobs:
       - name: Fetch ffmpeg/ffprobe sidecars (macOS ${{ matrix.arch }})
         run: bash scripts/fetch-ffmpeg.sh ${{ matrix.sidecar }}
 
+      - name: Configure llama.cpp (macOS intel - desativa CURL/OpenSSL)
+        if: matrix.name == 'intel'
+        run: |
+          # O build do llama.cpp (common + server) usa cpp-httplib com TLS que
+          # exige OpenSSL. No cross x86_64 em runner arm64, o link de
+          # libllama-common.dylib falha com `_ERR_*` indefinidos (sem libcrypto
+          # para o target). Desativar CURL remove essa dependência.
+          echo "CMAKE_ARGS=-DLLAMA_CURL=OFF" >> "$GITHUB_ENV"
+          echo "LLAMA_CURL=0" >> "$GITHUB_ENV"
+          echo "macOS intel: LLAMA_CURL desativado via CMAKE_ARGS"
+
       - name: Build DMG
         run: |
           # Metal em ambos os targets (todo hardware Apple suporta). onnxruntime.dll
@@ -235,6 +273,12 @@ jobs:
     # Best effort (ver nota do topo): não bloqueia a release se falhar.
     continue-on-error: true
     runs-on: windows-latest
+    env:
+      # ggml/whisper.cpp em Windows ARM64 não suportam MSVC — exigem clang
+      # (whisper-rs-sys: "MSVC is not supported for ARM, use clang").
+      CC: clang
+      CXX: clang++
+      CMAKE_GENERATOR: Ninja
 
     steps:
       - name: Checkout
@@ -255,6 +299,16 @@ jobs:
           key: win-arm64-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: win-arm64-
 
+      - name: Setup clang (ARM64 requer clang, não MSVC)
+        shell: bash
+        run: |
+          # LLVM já vem no runner windows-latest; garantir que clang está no PATH
+          which clang || echo "clang não encontrado no PATH"
+          clang --version || true
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -270,11 +324,32 @@ jobs:
 
       - name: Prepare native DLL staging dir
         shell: bash
-        run: mkdir -p src-tauri/binaries/native
+        run: |
+          rm -rf src-tauri/binaries/native
+          mkdir -p src-tauri/binaries/native
+
+      - name: Build app without bundle (ARM64, gera DLLs)
+        shell: bash
+        run: |
+          npm run tauri build -- --no-bundle --features full --target aarch64-pc-windows-msvc
+
+      - name: Stage runtime DLLs (ARM64)
+        shell: bash
+        run: |
+          shopt -s nullglob
+          dlls=(src-tauri/target/aarch64-pc-windows-msvc/release/*.dll)
+          if [ ${#dlls[@]} -eq 0 ]; then
+            echo "Nenhuma DLL em aarch64 release"
+          else
+            cp -L "${dlls[@]}" src-tauri/binaries/native/
+            rm -f src-tauri/target/aarch64-pc-windows-msvc/release/*.dll
+            ls -lh src-tauri/binaries/native/
+          fi
 
       - name: Build NSIS installer (ARM64, CPU)
         shell: bash
         run: |
+          touch src-tauri/tauri.windows.conf.json
           npm run tauri build -- --features full --target aarch64-pc-windows-msvc
 
       - name: Upload NSIS installer
