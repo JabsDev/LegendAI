@@ -82,7 +82,7 @@ pub fn detect() -> HardwareInfo {
 pub fn detect_gpu() -> Option<GpuKind> {
     #[cfg(target_os = "macos")]
     {
-        return Some(GpuKind::Metal);
+        Some(GpuKind::Metal)
     }
     #[cfg(not(target_os = "macos"))]
     {

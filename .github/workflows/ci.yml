@@ -70,6 +70,15 @@ jobs:
         shell: bash
         run: bash scripts/fetch-ffmpeg.sh
 
+      # tauri.windows.conf.json referencia binaries/native como resource de
+      # bundle (staging das DLLs de runtime no job de release); em CI normal
+      # o diretório precisa existir (vazio) para o tauri_build não falhar
+      # com "resource path binaries/native doesn't exist" no Windows.
+      - name: Prepare native DLL staging dir (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: mkdir -p src-tauri/binaries/native
+
       - name: Format check (rustfmt)
         working-directory: src-tauri
         run: cargo fmt -- --check
