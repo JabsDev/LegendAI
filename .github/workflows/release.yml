@@ -445,12 +445,11 @@ jobs:
       - name: Fetch ffmpeg/ffprobe sidecars (linux64)
         run: bash scripts/fetch-ffmpeg.sh linux64
 
-      - name: Build deb
+      - name: Build deb and AppImage
         run: |
-          # Só deb por enquanto: o AppImage (linuxdeploy) falha no runner
-          # ("failed to run linuxdeploy"); o deb usa dpkg e é confiável.
+          # Gera deb + AppImage (AppImage já tem APPIMAGE_EXTRACT_AND_RUN=1 e NO_STRIP=true no env do job para evitar "failed to run linuxdeploy"/FUSE/strip)
           # onnxruntime.dll injection is Windows-only (see the windows job).
-          npm run tauri build -- --features ${{ matrix.features }} --bundles deb
+          npm run tauri build -- --features ${{ matrix.features }} --bundles deb,appimage
 
       - name: Rename packages with variant suffix
         run: |
@@ -459,12 +458,15 @@ jobs:
           cd src-tauri/target/release/bundle
           V='${{ matrix.variant }}'
           for f in deb/*.deb; do mv "$f" "${f/.deb/-${V}.deb}"; done
+          for f in appimage/*.AppImage; do mv "$f" "${f/.AppImage/-${V}.AppImage}"; done
 
-      - name: Upload deb
+      - name: Upload deb and AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: legendai-linux-deb-${{ matrix.variant }}
-          path: src-tauri/target/release/bundle/deb/*.deb
+          name: legendai-linux-${{ matrix.variant }}
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   release:
