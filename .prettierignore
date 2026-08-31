@@ -2,6 +2,7 @@ PLANNING.md
 package-lock.json
 node_modules
 dist
+dist.bak
 build
 src-tauri/target
 src-tauri/binaries

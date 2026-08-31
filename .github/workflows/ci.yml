@@ -63,6 +63,13 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # O tauri_build (externalBin) exige os sidecars ffmpeg/ffprobe presentes
+      # para qualquer cargo build/test/clippy — sem eles o build script falha
+      # com "resource path binaries/ffmpeg-<triple> doesn't exist".
+      - name: Fetch ffmpeg/ffprobe sidecars
+        shell: bash
+        run: bash scripts/fetch-ffmpeg.sh
+
       - name: Format check (rustfmt)
         working-directory: src-tauri
         run: cargo fmt -- --check

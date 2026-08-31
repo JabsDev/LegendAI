@@ -9,8 +9,15 @@ workflow `fetch-binaries.yml` (a partir da Fase 6) e, em dev, pelo script
 
 A subpasta `native/` é um **diretório de staging** usado pelo workflow de release
 (`.github/workflows/release.yml`, job `windows`) para embarcar as DLLs de runtime
-do app no instalador NSIS (`onnxruntime.dll`, `DirectML.dll`, `llama.dll`,
-`ggml-*.dll`, etc.). Não é versionada e não deve conter arquivos commitados.
+do app no instalador NSIS (`DirectML.dll` e os providers CUDA/TensorRT do
+onnxruntime nas variantes GPU). Não é versionada e não deve conter arquivos
+commitados.
+
+Nota: `llama.dll`/`ggml-*.dll` não existem mais — desde que o LegendAI passou a
+compilar o `llama-cpp-4` com `default-features = false` (sem `dynamic-link`),
+o llama.cpp é linkado estaticamente dentro do `legendai.exe` em todos os OS.
+Antes o `.deb` saía quebrado: linkava `libllama.so.0`/`libggml*.so.0` que não
+eram distribuídos no pacote.
 
 Motivo: as DLLs do onnxruntime são criadas pelos build scripts como **symlinks**
 para `$CARGO_HOME/registry` em `target/release`. Fazer o `bundle.resources` do

@@ -61,7 +61,7 @@ jobs:
         if: matrix.variant == 'nvidia'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: '13.2.0'
+          cuda: "13.2.0"
           log-file-suffix: windows-${{ matrix.variant }}
 
       - name: Install Vulkan SDK (variante amd-intel)
@@ -98,6 +98,16 @@ jobs:
           echo "Vulkan SDK instalado em: $SDK_DIR"
           ls -lh "$SDK_DIR/Include/vulkan" 2>&1 | head -n 20 || ls -lh "$SDK_DIR" | head -n 30
 
+          # O gerador Visual Studio do cmake crate quebra no ExternalProject
+          # vulkan-shaders-gen do ggml: o custom-build .bat do INSTALL.vcxproj
+          # falha com MSB8066 "cannot find the batch label specified - VCEnd"
+          # e o passo de install do subprojeto nunca gera cmake_install.cmake,
+          # mesmo com o vulkan-shaders-gen.exe compilado com sucesso. Ninja
+          # (pré-instalado no runner) não usa .bat custom build e instala o
+          # subprojeto corretamente. O cmake crate lê CMAKE_GENERATOR da env
+          # quando o build.rs não fixa generator() — whisper-rs-sys não fixa.
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -121,11 +131,13 @@ jobs:
         shell: bash
         run: |
           # 1a fase: compila sem empacotar. Os build scripts das dependências
-          # (ort-sys copy_dylibs e llama-cpp-sys-4) geram onnxruntime.dll,
-          # DirectML.dll, llama.dll e ggml-*.dll em target/release, ao lado do
-          # exe. O bundle.resources de src-tauri/tauri.windows.conf.json aponta
-          # para o diretório estável `binaries/native` (vazio nesta fase) e
-          # tauri-build simplesmente o ignora.
+          # (ort-sys copy_dylibs) geram DirectML.dll e os providers CUDA do
+          # onnxruntime em target/release, ao lado do exe. O bundle.resources
+          # de src-tauri/tauri.windows.conf.json aponta para o diretório
+          # estável `binaries/native` (vazio nesta fase) e o tauri-build
+          # simplesmente o ignora. Nota: llama/ggml são estáticos desde a
+          # mudança para default-features=false (ver Cargo.toml) — só as DLLs
+          # de runtime do ort são dinâmicas.
           npm run tauri build -- --no-bundle --features ${{ matrix.features }}
 
       - name: Stage runtime DLLs como arquivos reais (segue symlinks)
@@ -141,10 +153,13 @@ jobs:
           #
           # Copiamos seguindo o symlink (cp -L) para o diretório estável e
           # removemos os symlinks do target/release, evitando a auto-cópia.
+          # GARANTIA: nenhuma DLL pode ficar para trás — o instalador tem que
+          # ser autossuficiente. Falha (exit 1) se ort estiver nas features mas
+          # nenhuma DLL for encontrada, para não publicar instalador quebrado.
           shopt -s nullglob
           dlls=(src-tauri/target/release/*.dll)
           if [ ${#dlls[@]} -eq 0 ]; then
-            echo "Nenhuma DLL encontrada em target/release (pode ser build sem ort/llama)"
+            echo "::warning::Nenhuma DLL em target/release (build sem ort)"
           else
             echo "Staging ${#dlls[@]} DLL(s) para binaries/native/"
             cp -L "${dlls[@]}" src-tauri/binaries/native/
@@ -172,6 +187,25 @@ jobs:
           for f in *-setup.exe; do
             mv "$f" "${f/-setup/-${{ matrix.variant }}-setup}"
           done
+
+      - name: Validate installer contents (sidecars + exe)
+        shell: bash
+        run: |
+          # Garantia de instalação limpa: o NSIS precisa conter legendai.exe,
+          # ffmpeg.exe e ffprobe.exe — sem isso o usuário final instala um app
+          # que abre mas falha em qualquer import de vídeo (erro de sidecar).
+          cd src-tauri/target/release/bundle/nsis
+          installer=$(ls *-setup.exe | head -1)
+          echo "Validando $installer ..."
+          listing=$(7z l "$installer")
+          echo "$listing" | tail -40
+          for required in legendai.exe ffmpeg.exe ffprobe.exe; do
+            if ! echo "$listing" | grep -q " $required"; then
+              echo "::error::$required não encontrado no instalador $installer"
+              exit 1
+            fi
+          done
+          echo "OK: sidecars e executável presentes no instalador."
 
       - name: Upload NSIS installer
         uses: actions/upload-artifact@v4
@@ -242,16 +276,17 @@ jobs:
       - name: Fetch ffmpeg/ffprobe sidecars (macOS ${{ matrix.arch }})
         run: bash scripts/fetch-ffmpeg.sh ${{ matrix.sidecar }}
 
-      - name: Configure llama.cpp (macOS intel - desativa CURL/OpenSSL)
+      - name: Configure llama.cpp (macOS intel - desativa OpenSSL)
         if: matrix.name == 'intel'
         run: |
-          # O build do llama.cpp (common + server) usa cpp-httplib com TLS que
-          # exige OpenSSL. No cross x86_64 em runner arm64, o link de
-          # libllama-common.dylib falha com `_ERR_*` indefinidos (sem libcrypto
-          # para o target). Desativar CURL remove essa dependência.
-          echo "CMAKE_ARGS=-DLLAMA_CURL=OFF" >> "$GITHUB_ENV"
-          echo "LLAMA_CURL=0" >> "$GITHUB_ENV"
-          echo "macOS intel: LLAMA_CURL desativado via CMAKE_ARGS"
+          # O llama.cpp habilita HTTPS via OpenSSL no cpp-httplib por default
+          # (option(LLAMA_OPENSSL ... ON) — LLAMA_CURL não existe mais). No
+          # cross x86_64 a partir do runner arm64, o find_package(OpenSSL)
+          # resolve para o Homebrew ARM64 e o link de libllama-common.dylib
+          # falha com _ASN1_*/_ERR_* indefinidos. O toolchain força
+          # LLAMA_OPENSSL=OFF (HTTPS do server não é usado pelo app) via
+          # CMAKE_TOOLCHAIN_FILE, lido pelo cmake crate a partir da env.
+          echo "CMAKE_TOOLCHAIN_FILE=$PWD/scripts/cmake/no-openssl.cmake" >> "$GITHUB_ENV"
 
       - name: Build DMG
         run: |
@@ -260,6 +295,24 @@ jobs:
           # script do ort coloca junto ao binário. `--target` cross-compila o arch
           # irmão neste runner, produzindo um .dmg por entrada da matriz.
           npm run tauri build -- --features ${{ matrix.features }} --target ${{ matrix.target }}
+
+      - name: Validate DMG contents (sidecars + exe)
+        run: |
+          # Garantia de instalação limpa: o .app dentro do DMG precisa conter
+          # o executável e os sidecars ffmpeg/ffprobe em Contents/MacOS.
+          set -e
+          dmg=$(ls src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg | head -1)
+          echo "Validando $dmg ..."
+          hdiutil attach "$dmg" -nobrowse -quiet
+          app=$(ls -d /Volumes/*/LegendAI.app | head -1)
+          trap 'hdiutil detach "$(dirname "$app")" -quiet 2>/dev/null || true' EXIT
+          for required in legendai ffmpeg ffprobe; do
+            if [ ! -f "$app/Contents/MacOS/$required" ]; then
+              echo "::error::$required não encontrado em $app/Contents/MacOS/"
+              exit 1
+            fi
+          done
+          echo "OK: sidecars e executável presentes no DMG."
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -274,10 +327,15 @@ jobs:
     continue-on-error: true
     runs-on: windows-latest
     env:
-      # ggml/whisper.cpp em Windows ARM64 não suportam MSVC — exigem clang
-      # (whisper-rs-sys: "MSVC is not supported for ARM, use clang").
-      CC: clang
-      CXX: clang++
+      # ggml/whisper.cpp em Windows ARM64 não suportam MSVC — exigem clang.
+      # O whisper-rs-sys seta pic(true), e o cc emite `-fPIC` para clang GNU;
+      # o driver `clang` com --target=aarch64-pc-windows-msvc REJEITA -fPIC
+      # ("unsupported option"). Com clang-cl o cc detecta família MSVC
+      # (clang_cl) e não emite -fPIC (PIC é implícito no Windows); flags GNU
+      # que vazem são ignoradas com warning, não erro. O cmake crate propaga
+      # CC/CXX para CMAKE_C/CXX_COMPILER.
+      CC: clang-cl
+      CXX: clang-cl
       CMAKE_GENERATOR: Ninja
 
     steps:
@@ -302,12 +360,10 @@ jobs:
       - name: Setup clang (ARM64 requer clang, não MSVC)
         shell: bash
         run: |
-          # LLVM já vem no runner windows-latest; garantir que clang está no PATH
-          which clang || echo "clang não encontrado no PATH"
-          clang --version || true
-          echo "CC=clang" >> "$GITHUB_ENV"
-          echo "CXX=clang++" >> "$GITHUB_ENV"
-          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+          # LLVM já vem no runner windows-latest; garantir clang-cl no PATH.
+          # CC/CXX/CMAKE_GENERATOR já estão no env do job (ver comentário lá).
+          which clang-cl || echo "clang-cl não encontrado no PATH"
+          clang-cl --version || true
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -423,7 +479,7 @@ jobs:
         if: matrix.variant == 'nvidia'
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
-          cuda: '13.2.0'
+          cuda: "13.2.0"
           log-file-suffix: linux-${{ matrix.variant }}
 
       - name: Install Vulkan SDK (variante amd-intel)
@@ -459,6 +515,36 @@ jobs:
           V='${{ matrix.variant }}'
           for f in deb/*.deb; do mv "$f" "${f/.deb/-${V}.deb}"; done
           for f in appimage/*.AppImage; do mv "$f" "${f/.AppImage/-${V}.AppImage}"; done
+
+      - name: Validate deb contents (sidecars + no missing libs)
+        run: |
+          # Garantia de instalação limpa: o deb precisa conter usr/bin/legendai,
+          # ffmpeg e ffprobe. Além disso, com o llama estático (default-features
+          # =false no Cargo.toml) o binário não pode linkar libllama/libggml —
+          # libs build-time-only que quebrariam o app em máquina sem elas.
+          set -e
+          cd src-tauri/target/release/bundle
+          deb=$(ls deb/*.deb | head -1)
+          echo "Validando $deb ..."
+          ar x "$deb" -O data.tar.gz > /tmp/data.tar.gz
+          for required in usr/bin/legendai usr/bin/ffmpeg usr/bin/ffprobe; do
+            if ! tar -tzf /tmp/data.tar.gz | grep -qx "$required"; then
+              echo "::error::$required não encontrado no deb"
+              exit 1
+            fi
+          done
+          mkdir -p /tmp/deb-root && tar -xzf /tmp/data.tar.gz -C /tmp/deb-root usr/bin/legendai
+          missing=$(ldd /tmp/deb-root/usr/bin/legendai 2>/dev/null | grep "not found" || true)
+          if [ -n "$missing" ]; then
+            echo "::error::Bibliotecas ausentes no binário do deb:"
+            echo "$missing"
+            exit 1
+          fi
+          if ldd /tmp/deb-root/usr/bin/legendai 2>/dev/null | grep -qE "libllama|libggml"; then
+            echo "::error::binário ainda linka libllama/libggml dinamicamente — o deb não as distribui"
+            exit 1
+          fi
+          echo "OK: sidecars presentes e sem libs faltando no deb."
 
       - name: Upload deb and AppImage
         uses: actions/upload-artifact@v4

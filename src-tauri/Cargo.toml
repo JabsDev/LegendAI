@@ -72,4 +72,9 @@ tokenizers = { version = "0.23", optional = true, default-features = false }
 tracing-appender = "0.2.5"
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 parakeet-rs = { version = "0.3.7", optional = true }
-llama-cpp-4 = { version = "0.6.1" }
+# default-features=false: o default do llama-cpp-4 traz `dynamic-link` (libs
+# compartilhadas libllama/libggml*.so) — o Windows exigiria stagear 13 DLLs no
+# instalador e o .deb/AppImage do Linux sairiam quebrados (linkam .so que não
+# são distribuídos). Estático embute tudo no binário: instala e funciona.
+# `openmp` mantido (default) para paralelismo CPU.
+llama-cpp-4 = { version = "0.6.1", default-features = false, features = ["openmp"] }

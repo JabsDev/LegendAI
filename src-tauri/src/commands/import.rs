@@ -13,6 +13,7 @@ use serde::Serialize;
 use crate::audio::ffprobe::{
     list_audio_tracks, list_subtitle_tracks, probe_duration, AudioTrack, SubtitleStream,
 };
+use crate::errors::LegendaiError;
 
 /// Resultado da inspeção de um vídeo para a UI (serde/IPC).
 #[derive(Debug, Clone, Serialize)]
@@ -28,6 +29,11 @@ pub struct VideoInspection {
 
 /// Inspeciona `path` (vídeo local) e devolve duração + trilhas de áudio +
 /// streams de legenda de texto para a tela de importação.
+///
+/// Erros de mídia/ffprobe são mapeados para `LegendaiError` com código estável
+/// (`ffmpeg_missing`, `corrupted_file`, etc.) serializado como JSON, para que o
+/// frontend (`src/lib/errors.ts` `parseDetail`) exiba i18n + hint e não a
+/// mensagem crua de `FfmpegError::NotFound` (que contém instrução de dev).
 #[tauri::command(rename_all = "snake_case")]
 pub fn inspect_video(path: String) -> Result<VideoInspection, String> {
     let p = Path::new(&path);
@@ -38,10 +44,14 @@ pub fn inspect_video(path: String) -> Result<VideoInspection, String> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let audio_tracks = list_audio_tracks(p).map_err(|e| e.to_string())?;
-    let subtitle_streams = list_subtitle_tracks(p).map_err(|e| e.to_string())?;
+    let map_err = |e: crate::audio::ffmpeg_extract::AudioError| {
+        let detail = LegendaiError::from(e).to_detail();
+        serde_json::to_string(&detail).unwrap_or(detail.message)
+    };
+    let audio_tracks = list_audio_tracks(p).map_err(map_err)?;
+    let subtitle_streams = list_subtitle_tracks(p).map_err(map_err)?;
     let duration_secs = probe_duration(p)
-        .map_err(|e| e.to_string())?
+        .map_err(map_err)?
         .map(|d| d.as_secs_f64())
         .unwrap_or(0.0);
     Ok(VideoInspection {

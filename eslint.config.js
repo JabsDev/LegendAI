@@ -5,7 +5,7 @@ import globals from "globals";
 
 export default tseslint.config(
   {
-    ignores: ["dist", "build", "node_modules", "src-tauri"],
+    ignores: ["dist", "dist.bak", "build", "node_modules", "src-tauri"],
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,

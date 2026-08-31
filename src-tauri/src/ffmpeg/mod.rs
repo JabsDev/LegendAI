@@ -19,15 +19,20 @@ pub enum FfmpegError {
 }
 
 /// Nome do arquivo sidecar com sufixo do target triple (ex: `ffmpeg-x86_64-unknown-linux-gnu`).
+/// No Windows o arquivo tem extensão `.exe` (exigido pelo Tauri para sidecars Windows).
 fn sidecar_file(name: &str) -> Result<PathBuf, FfmpegError> {
     let triple =
         tauri::utils::platform::target_triple().map_err(|e| FfmpegError::Triple(Box::new(e)))?;
-    Ok(PathBuf::from(format!("{name}-{triple}")))
+    let mut file = format!("{name}-{triple}");
+    if triple.contains("windows") {
+        file.push_str(".exe");
+    }
+    Ok(PathBuf::from(file))
 }
 
 /// Resolve o caminho do binário sidecar.
-/// Dev: `src-tauri/binaries/<name>-<triple>` (fonte).
-/// Prod: `exe_dir/<name>` (o tauri extrai o sidecar ao lado do executável, sem sufixo).
+/// Dev: `src-tauri/binaries/<name>-<triple>[.exe]` (fonte).
+/// Prod: `exe_dir/<name>[.exe]` (o tauri extrai o sidecar ao lado do executável, sem sufixo de triple mas mantendo .exe no Windows).
 pub fn binary_path(name: &str) -> Result<PathBuf, FfmpegError> {
     if tauri::is_dev() {
         let dev = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -36,14 +41,52 @@ pub fn binary_path(name: &str) -> Result<PathBuf, FfmpegError> {
         if dev.exists() {
             return Ok(dev);
         }
+        // Fallback: tentar sem/com .exe para compatibilidade com arquivos legados
+        let alt = if dev.extension().is_some() {
+            dev.with_extension("")
+        } else {
+            dev.with_extension("exe")
+        };
+        if alt.exists() {
+            return Ok(alt);
+        }
     }
 
-    let prod = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
-        .filter(|p| p.exists());
-    if let Some(prod) = prod {
-        return Ok(prod);
+    // Produção: sidecar é extraído pelo Tauri ao lado do executável
+    // (sem sufixo de triple, mas com .exe no Windows). `current_exe` cobre
+    // NSIS (Windows), deb/AppImage (Linux) e .app/Contents/MacOS (macOS).
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [dir.join(name), dir.join(format!("{name}.exe"))] {
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+            // macOS/Linux: em alguns bundles o recurso pode estar em
+            // `../Resources` relativo ao executável — tenta também.
+            for candidate in [
+                dir.join(format!("../Resources/{name}")),
+                dir.join(format!("../Resources/{name}.exe")),
+            ] {
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
+    }
+
+    // Último fallback dev: tentar binário do sistema no PATH (ex: ffmpeg
+    // instalado via apt/brew) para não bloquear totalmente o dev sem sidecar.
+    // Em produção o sidecar do bundle é obrigatório — este fallback não
+    // deve ser alcançado no instalador.
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            for candidate in [dir.join(name), dir.join(format!("{name}.exe"))] {
+                if candidate.exists() {
+                    return Ok(candidate);
+                }
+            }
+        }
     }
 
     Err(FfmpegError::NotFound(name.to_string()))
