@@ -11,6 +11,52 @@ e o versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 - Nada pendente.
 
+## [v0.1.13] - 2026-09-01
+
+### Fixed
+
+- **Windows (runtime, sidecar ffprobe/ffmpeg):** instalado, o app falhava em
+  qualquer importação de vídeo com "sidecar ffprobe não encontrado". O
+  `binary_path()` procurava `ffprobe`/`ffmpeg` **sem a extensão `.exe`** que o
+  Tauri exige em sidecars Windows — tanto em dev (`src-tauri/binaries/`) quanto
+  em produção (`exe_dir/`). Agora resolve `ffprobe.exe`/`ffmpeg.exe` no Windows
+  (e mantém os nomes sem extensão nos demais OS), com fallbacks para o
+  diretório `Resources` (macOS) e `PATH` (dev sem sidecar).
+- **Linux (.deb/AppImage):** o pacote estava **quebrado em instalação limpa** —
+  o binário linkava dinamicamente `libllama.so.0`/`libggml*.so.0` (default
+  `dynamic-link` do `llama-cpp-4`) mas essas libs não eram distribuídas no
+  pacote. O llama.cpp agora é linkado **estaticamente** dentro do `legendai`
+  (`default-features = false`, feature `openmp`) em todos os OS: instala e roda
+  sem dependências extras. O job de release valida por `ldd` que não há libs
+  faltando antes de publicar.
+- **CI:** builds voltam a passar nos 3 OS. O `tauri_build` exige os sidecars
+  `externalBin` em qualquer `cargo clippy/test/build` — o CI agora baixa
+  ffmpeg/ffprobe antes; `.gitattributes` com `eol=lf` evita falha do Prettier
+  por CRLF no runner Windows; `binaries/native` é pré-criado no CI.
+- **Release (Windows amd-intel/Vulkan):** o gerador Visual Studio do CMake
+  quebrava no `ExternalProject` `vulkan-shaders-gen` (MSB8066 "cannot find the
+  batch label specified - VCEnd"), mesmo com o `vulkan-shaders-gen.exe`
+  compilado. O job agora usa `CMAKE_GENERATOR=Ninja`.
+- **Release (macOS intel):** o cross `x86_64` linkava o **OpenSSL ARM64 do
+  Homebrew** no `libllama-common` (`_ASN1_*`/`_ERR_*` indefinidos) — a flag
+  `LLAMA_CURL` usada antes não existe mais no llama.cpp. Corrigido com toolchain
+  `scripts/cmake/no-openssl.cmake` (`LLAMA_OPENSSL=OFF`) via
+  `CMAKE_TOOLCHAIN_FILE`; HTTPS do server do llama.cpp não é usado pelo app.
+- **Release (Windows ARM64 Snapdragon):** o driver `clang` GNU rejeita `-fPIC`
+  para o target `aarch64-pc-windows-msvc` ("unsupported option"); os jobs agora
+  usam `clang-cl`, que ignora `-fPIC` com warning (PIC é implícito no Windows).
+
+### Added
+
+- **Guarda contra instalador quebrado:** `tauri build` em release falha com
+  instrução clara se os sidecars ffmpeg/ffprobe estiverem ausentes; o workflow
+  de release valida o **conteúdo** dos instaladores antes de publicar (NSIS via
+  `7z l`: `legendai.exe`/`ffmpeg.exe`/`ffprobe.exe`; DMG: monta e verifica
+  `Contents/MacOS`; `.deb`: `ar`+`tar`+`ldd` sem "not found").
+- Erros de mídia na importação (`inspect_video`) agora chegam à UI como código
+  estável + i18n + hint (ex. `ffmpeg_missing` → "Reinstale o aplicativo..."),
+  em vez da mensagem crua de dev.
+
 ## [v0.1.12] - 2026-08-30
 
 ### Added
