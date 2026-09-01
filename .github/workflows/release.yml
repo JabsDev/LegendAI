@@ -352,9 +352,13 @@ jobs:
       # defaults que o CMake adicionaria para MSVC — `/EHsc` (exceções C++)
       # faltava e o gguf.cpp falhava com "cannot use 'try' with exceptions
       # disabled". O cc aplica CXXFLAGS por último (overrides).
+      # NOTA: `//EHsc` com barra dupla — o MSYS/Git-Bash converte valores de
+      # env que parecem path Unix (`/EHsc` → `C:/Program Files/Git/EHsc`) ao
+      # atravessar a fronteira Win32→MSYS; `//` não é convertido e o clang-cl
+      # aceita como `/EHsc`.
       CC_aarch64-pc-windows-msvc: clang-cl
       CXX_aarch64-pc-windows-msvc: clang-cl
-      CXXFLAGS_aarch64-pc-windows-msvc: /EHsc
+      CXXFLAGS_aarch64-pc-windows-msvc: //EHsc
       CMAKE_GENERATOR: Ninja
 
     steps:
