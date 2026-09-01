@@ -340,17 +340,22 @@ jobs:
       # o driver `clang` com --target=aarch64-pc-windows-msvc REJEITA -fPIC
       # ("unsupported option"). Com clang-cl o cc detecta família MSVC
       # (clang_cl) e não emite -fPIC (PIC é implícito no Windows); flags GNU
-      # que vazem são ignoradas com warning, não erro. O cmake crate propaga
-      # CC/CXX para CMAKE_C/CXX_COMPILER.
-      CC: clang-cl
-      CXX: clang-cl
-      CMAKE_GENERATOR: Ninja
+      # que vazam são ignoradas com warning, não erro.
+      #
+      # IMPORTANTE: CC/CXX só com sufixo do TARGET (aarch64-pc-windows-msvc).
+      # Setar CC/CXX globais quebrava o vswhom-sys (build HOST x86_64 do
+      # tauri): com clang-cl no modo host o cc emite `-Fo<obj>` que o
+      # clang-cl rejeita ("cannot specify -Fo when compiling multiple source
+      # files").
+      #
       # O cmake crate monta CMAKE_CXX_FLAGS a partir das flags do cc, sem os
       # defaults que o CMake adicionaria para MSVC — `/EHsc` (exceções C++)
       # faltava e o gguf.cpp falhava com "cannot use 'try' with exceptions
-      # disabled". O cc aplica CFLAGS/CXXFLAGS por último (overrides).
-      CFLAGS: /EHsc
-      CXXFLAGS: /EHsc
+      # disabled". O cc aplica CXXFLAGS por último (overrides).
+      CC_aarch64-pc-windows-msvc: clang-cl
+      CXX_aarch64-pc-windows-msvc: clang-cl
+      CXXFLAGS_aarch64-pc-windows-msvc: /EHsc
+      CMAKE_GENERATOR: Ninja
 
     steps:
       - name: Checkout
