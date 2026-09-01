@@ -596,6 +596,16 @@ jobs:
           path: artifacts
           merge-multiple: true
 
+      - name: Flatten artifacts (uploads com subpastas viram arquivos soltos)
+        run: |
+          # Alguns artifacts (linux) trazem subpastas (deb/, appimage/) que
+          # quebram `sha256sum *` e o glob do `gh release create`. Achatamos
+          # tudo para um único nível.
+          cd artifacts
+          find . -mindepth 2 -type f -exec mv -n {} . \; 2>/dev/null || true
+          find . -mindepth 1 -type d -empty -delete
+          ls -lh .
+
       - name: Compute SHA256 checksums
         working-directory: artifacts
         run: sha256sum * > SHA256SUMS.txt
