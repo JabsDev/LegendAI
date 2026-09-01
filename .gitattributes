@@ -1,0 +1,15 @@
+# Normaliza EOL: o runner Windows faz checkout com core.autocrlf=true
+# (CRLF no working dir) e o "Format check (Prettier)" do CI falha em TODOS os
+# arquivos de texto. Força LF no working tree em todos os OS — o repo já é
+# todo LF e o .editorconfig pede lf.
+* text=auto eol=lf
+
+# Binários: nunca normalizar (corromperia)
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.deb binary
+*.dmg binary
+*.AppImage binary
+*.lock text eol=lf
