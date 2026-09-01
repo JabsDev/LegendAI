@@ -95,6 +95,10 @@ fn main() {
             println!("cargo:rustc-link-lib=cudart");
             println!("cargo:rustc-link-lib=cublas");
             println!("cargo:rustc-link-lib=cublasLt");
+            // cuda.lib = import lib da API do DRIVER (cuDeviceGet, cuMemCreate
+            // — VMM do ggml). Em runtime carrega a nvcuda.dll do driver NVIDIA
+            // do usuário.
+            println!("cargo:rustc-link-lib=cuda");
         } else if target.contains("linux") {
             if let Some(cuda_path) = std::env::var_os("CUDA_PATH") {
                 let lib64 = std::path::Path::new(&cuda_path).join("lib64");
