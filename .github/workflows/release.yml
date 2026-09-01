@@ -37,6 +37,14 @@ jobs:
       # Workaround para o limite de path do MSVC ao compilar ggml-vulkan
       # (FTK1011, ver whisper-rs #252): desativa FileTracker.
       TrackFileAccess: false
+      # Limite de path do Windows (CMAKE_OBJECT_PATH_MAX=250): o ExternalProject
+      # vulkan-shaders-gen do ggml cria paths ~242 chars dentro do OUT_DIR do
+      # whisper-rs-sys (src-tauri/target/release/build/whisper-rs-sys-<hash>/
+      # out/build/ggml/...) e o CMake aborta com "object file directory has 242
+      # characters" na variante vulkan. Target dir curto na raiz do drive corta
+      # ~40 chars e resolve; afeta os 3 variants mas só quebra no vulkan — os
+      # demais já passavam, target novo só muda o cache (key já distingue).
+      CARGO_TARGET_DIR: ${{ github.workspace }}\\t
 
     steps:
       - name: Checkout
@@ -51,7 +59,7 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            src-tauri/target
+            t
           key: windows-${{ matrix.variant }}-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: windows-${{ matrix.variant }}-
 
@@ -157,14 +165,14 @@ jobs:
           # ser autossuficiente. Falha (exit 1) se ort estiver nas features mas
           # nenhuma DLL for encontrada, para não publicar instalador quebrado.
           shopt -s nullglob
-          dlls=(src-tauri/target/release/*.dll)
+          dlls=(t/release/*.dll)
           if [ ${#dlls[@]} -eq 0 ]; then
             echo "::warning::Nenhuma DLL em target/release (build sem ort)"
           else
             echo "Staging ${#dlls[@]} DLL(s) para binaries/native/"
             cp -L "${dlls[@]}" src-tauri/binaries/native/
             # Remover apenas symlinks/DLLs após cópia bem-sucedida
-            rm -f src-tauri/target/release/*.dll
+            rm -f t/release/*.dll
             ls -lh src-tauri/binaries/native/
           fi
 
@@ -183,7 +191,7 @@ jobs:
         run: |
           # Instaladores da mesma versão teriam o mesmo nome entre variantes;
           # sufixar evita colisão nos assets da release.
-          cd src-tauri/target/release/bundle/nsis
+          cd t/release/bundle/nsis
           for f in *-setup.exe; do
             mv "$f" "${f/-setup/-${{ matrix.variant }}-setup}"
           done
@@ -194,7 +202,7 @@ jobs:
           # Garantia de instalação limpa: o NSIS precisa conter legendai.exe,
           # ffmpeg.exe e ffprobe.exe — sem isso o usuário final instala um app
           # que abre mas falha em qualquer import de vídeo (erro de sidecar).
-          cd src-tauri/target/release/bundle/nsis
+          cd t/release/bundle/nsis
           installer=$(ls *-setup.exe | head -1)
           echo "Validando $installer ..."
           listing=$(7z l "$installer")
@@ -212,8 +220,8 @@ jobs:
         with:
           name: legendai-windows-x64-${{ matrix.variant }}
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/nsis/*.txt
+            t/release/bundle/nsis/*.exe
+            t/release/bundle/nsis/*.txt
           if-no-files-found: error
 
   macos:
@@ -532,21 +540,22 @@ jobs:
           cd src-tauri/target/release/bundle
           deb=$(ls deb/*.deb | head -1)
           echo "Validando $deb ..."
-          ar x "$deb" -O data.tar.gz > /tmp/data.tar.gz
+          rm -rf /tmp/deb-extract && mkdir -p /tmp/deb-extract
+          ar x --output=/tmp/deb-extract "$deb" data.tar.gz
+          tar -xzf /tmp/deb-extract/data.tar.gz -C /tmp/deb-extract
           for required in usr/bin/legendai usr/bin/ffmpeg usr/bin/ffprobe; do
-            if ! tar -tzf /tmp/data.tar.gz | grep -qx "$required"; then
+            if [ ! -f "/tmp/deb-extract/$required" ]; then
               echo "::error::$required não encontrado no deb"
               exit 1
             fi
           done
-          mkdir -p /tmp/deb-root && tar -xzf /tmp/data.tar.gz -C /tmp/deb-root usr/bin/legendai
-          missing=$(ldd /tmp/deb-root/usr/bin/legendai 2>/dev/null | grep "not found" || true)
+          missing=$(ldd /tmp/deb-extract/usr/bin/legendai 2>/dev/null | grep "not found" || true)
           if [ -n "$missing" ]; then
             echo "::error::Bibliotecas ausentes no binário do deb:"
             echo "$missing"
             exit 1
           fi
-          if ldd /tmp/deb-root/usr/bin/legendai 2>/dev/null | grep -qE "libllama|libggml"; then
+          if ldd /tmp/deb-extract/usr/bin/legendai 2>/dev/null | grep -qE "libllama|libggml"; then
             echo "::error::binário ainda linka libllama/libggml dinamicamente — o deb não as distribui"
             exit 1
           fi
