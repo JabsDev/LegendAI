@@ -72,4 +72,27 @@ fn main() {
             println!("cargo:warning={msg}");
         }
     }
+
+    // Link CUDA para a feature `cuda` no Linux (variante nvidia do release).
+    //
+    // O build script do `llama-cpp-sys-4` em modo ESTÁTICO não emite
+    // `cargo:rustc-link-lib` para cudart/cublas — o CMake liga
+    // `CUDA::cudart_static` PRIVATE no ggml-cuda mas o target não é instalado
+    // e o `extract_lib_names` só varre libllama/libggml*.a. O resultado era
+    // "undefined symbol: cudaGetDeviceCount" no link do binário. Emitimos
+    // aqui os links do runtime CUDA (não versionados — resolvem no toolkit
+    // do CI e no driver do usuário via link dinâmico de libcuda.so.1).
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let cuda_enabled = std::env::var("CARGO_FEATURE_CUDA").is_ok();
+    if cuda_enabled && target.contains("linux") {
+        if let Some(cuda_path) = std::env::var_os("CUDA_PATH") {
+            let lib64 = std::path::Path::new(&cuda_path).join("lib64");
+            if lib64.exists() {
+                println!("cargo:rustc-link-search=native={}", lib64.display());
+            }
+        }
+        println!("cargo:rustc-link-lib=cudart");
+        println!("cargo:rustc-link-lib=cublas");
+        println!("cargo:rustc-link-lib=cublasLt");
+    }
 }
