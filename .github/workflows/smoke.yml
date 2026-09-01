@@ -22,6 +22,10 @@ jobs:
     runs-on: ubuntu-22.04
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      # Jobs não fazem checkout (máquina "limpa" de propósito); sem o
+      # repositório git o `gh` falha com "not a git repository". GH_REPO
+      # aponta o gh para o repo certo.
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download deb da release
         env:
@@ -41,6 +45,7 @@ jobs:
     runs-on: windows-latest
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download instalador NSIS da release
         shell: bash
@@ -74,6 +79,7 @@ jobs:
     runs-on: macos-14
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Download DMG arm64 da release
         env:
