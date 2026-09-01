@@ -102,9 +102,20 @@ fn main() {
                     println!("cargo:rustc-link-search=native={}", lib64.display());
                 }
             }
+            // Também stubs do driver (CUDA_PATH/lib64/stubs) para o link — o
+            // ggml-cuda usa a API do driver (cuDeviceGet, cuMemCreate...) p/
+            // VMM; em runtime resolve contra a libcuda.so.1 do driver NVIDIA
+            // instalado na máquina do usuário.
+            if let Some(cuda_path) = std::env::var_os("CUDA_PATH") {
+                let stubs = std::path::Path::new(&cuda_path).join("lib64").join("stubs");
+                if stubs.exists() {
+                    println!("cargo:rustc-link-search=native={}", stubs.display());
+                }
+            }
             println!("cargo:rustc-link-lib=cudart");
             println!("cargo:rustc-link-lib=cublas");
             println!("cargo:rustc-link-lib=cublasLt");
+            println!("cargo:rustc-link-lib=cuda");
         }
     }
 }
