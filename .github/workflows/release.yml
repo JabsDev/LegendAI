@@ -337,6 +337,12 @@ jobs:
       CC: clang-cl
       CXX: clang-cl
       CMAKE_GENERATOR: Ninja
+      # O cmake crate monta CMAKE_CXX_FLAGS a partir das flags do cc, sem os
+      # defaults que o CMake adicionaria para MSVC — `/EHsc` (exceções C++)
+      # faltava e o gguf.cpp falhava com "cannot use 'try' with exceptions
+      # disabled". O cc aplica CFLAGS/CXXFLAGS por último (overrides).
+      CFLAGS: /EHsc
+      CXXFLAGS: /EHsc
 
     steps:
       - name: Checkout
