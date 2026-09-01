@@ -192,8 +192,12 @@ jobs:
           # Instaladores da mesma versão teriam o mesmo nome entre variantes;
           # sufixar evita colisão nos assets da release.
           cd t/release/bundle/nsis
+          V='${{ matrix.variant }}'
           for f in *-setup.exe; do
-            mv "$f" "${f/-setup/-${{ matrix.variant }}-setup}"
+            # Idempotente: re-runs do job não devem aplicar o sufixo 2x
+            # (gerava "x64-cpu-cpu-setup.exe").
+            case "$f" in *"-${V}-setup.exe") continue ;; esac
+            mv "$f" "${f/-setup/-${V}-setup}"
           done
 
       - name: Validate installer contents (sidecars + exe)
@@ -536,8 +540,15 @@ jobs:
           # colisão nos assets da release.
           cd src-tauri/target/release/bundle
           V='${{ matrix.variant }}'
-          for f in deb/*.deb; do mv "$f" "${f/.deb/-${V}.deb}"; done
-          for f in appimage/*.AppImage; do mv "$f" "${f/.AppImage/-${V}.AppImage}"; done
+          # Idempotente: re-runs não aplicam o sufixo 2x.
+          for f in deb/*.deb; do
+            case "$f" in *"-${V}.deb") continue ;; esac
+            mv "$f" "${f/.deb/-${V}.deb}"
+          done
+          for f in appimage/*.AppImage; do
+            case "$f" in *"-${V}.AppImage") continue ;; esac
+            mv "$f" "${f/.AppImage/-${V}.AppImage}"
+          done
 
       - name: Validate deb contents (sidecars + no missing libs)
         run: |
