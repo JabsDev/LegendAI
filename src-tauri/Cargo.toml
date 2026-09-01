@@ -10,7 +10,12 @@ edition = "2021"
 # to make the lib name unique and wouldn't conflict with the bin name.
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "legendai_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+# staticlib/cdylib eram para mobile (Tauri android/ios), não usado neste app
+# desktop. A cdylib quebrava o release Linux nvidia: o link -shared exige
+# PIC em TODOS os objetos e os kernels CUDA do ggml não são compilados com
+# -fPIC (relocation R_X86_64_PC32 contra 'stderr' etc.). Sem os crate-types
+# extras, cargo build só produz o rlib + bin — sem link -shared.
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
