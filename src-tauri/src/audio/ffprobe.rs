@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -5,7 +6,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tracing::debug;
 
-use crate::audio::ffmpeg_extract::AudioError;
+use crate::audio::ffmpeg_extract::{url_input_options, AudioError};
 use crate::ffmpeg::{self, FFPROBE};
 
 /// Trilha de áudio detectada por ffprobe em um vídeo.
@@ -86,8 +87,46 @@ where
 #[allow(dead_code)] // consumida pelo pipeline (1.9) e comandos IPC
 pub fn list_audio_tracks(video_path: &Path) -> Result<Vec<AudioTrack>, AudioError> {
     let json = probe_json(video_path, &["-show_streams"])?;
+    parse_audio_tracks(&json)
+}
+
+/// Trilhas de áudio de uma URL + o formato de entrada forçado (se a
+/// auto-detecção falhou e foi preciso assumir DASH — caso AnimeFire `.jpg`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RemoteTracks {
+    pub tracks: Vec<AudioTrack>,
+    pub forced_format: Option<String>,
+}
+
+/// Sonda as trilhas de áudio de uma URL com os cabeçalhos HTTP do job.
+///
+/// Estratégia: tenta a auto-detecção do ffprobe; se falhar (DASH servido como
+/// `application/dash+xml` em URL `.jpg`, que o demuxer não reconhece pela
+/// extensão), repete com `-f dash`. Nunca usa shell.
+#[allow(dead_code)] // consumida pelo pipeline da fila remota (Fase 2)
+pub fn probe_remote_tracks(
+    url: &str,
+    headers: &HashMap<String, String>,
+) -> Result<RemoteTracks, AudioError> {
+    match probe_json_url(url, headers, None) {
+        Ok(json) => Ok(RemoteTracks {
+            tracks: parse_audio_tracks(&json)?,
+            forced_format: None,
+        }),
+        Err(_) => {
+            let json = probe_json_url(url, headers, Some("dash"))?;
+            Ok(RemoteTracks {
+                tracks: parse_audio_tracks(&json)?,
+                forced_format: Some("dash".into()),
+            })
+        }
+    }
+}
+
+/// Extrai as trilhas de áudio do JSON de `-show_streams`.
+fn parse_audio_tracks(json: &str) -> Result<Vec<AudioTrack>, AudioError> {
     let parsed: StreamsJson =
-        serde_json::from_str(&json).map_err(|e| AudioError::Json(e.to_string()))?;
+        serde_json::from_str(json).map_err(|e| AudioError::Json(e.to_string()))?;
     Ok(parsed
         .streams
         .into_iter()
@@ -154,11 +193,37 @@ pub fn probe_duration(video_path: &Path) -> Result<Option<Duration>, AudioError>
 /// Executa `ffprobe -v quiet -print_format json <extra...> <video>` e
 /// devolve o stdout em caso de sucesso.
 fn probe_json(video_path: &Path, extra: &[&str]) -> Result<String, AudioError> {
+    run_probe(&video_path.to_string_lossy(), extra, &[])
+}
+
+/// Igual a [`probe_json`], mas para uma URL com cabeçalhos/formato forçado
+/// (opções de entrada antes do input).
+#[allow(dead_code)] // consumida pela fila remota (Fase 2)
+fn probe_json_url(
+    url: &str,
+    headers: &HashMap<String, String>,
+    forced_format: Option<&str>,
+) -> Result<String, AudioError> {
+    run_probe(
+        url,
+        &["-show_streams"],
+        &url_input_options(headers, forced_format),
+    )
+}
+
+/// Executa o ffprobe com opções de entrada opcionais (headers/formato) e
+/// devolve o stdout. Nunca usa shell — args em array (ADR-003).
+fn run_probe(input: &str, extra: &[&str], input_options: &[String]) -> Result<String, AudioError> {
     let bin = ffmpeg::binary_path(FFPROBE)?;
-    let video = video_path.to_string_lossy();
-    let mut args: Vec<&str> = vec!["-v", "quiet", "-print_format", "json"];
-    args.extend_from_slice(extra);
-    args.push(&video);
+    let mut args: Vec<String> = vec![
+        "-v".into(),
+        "quiet".into(),
+        "-print_format".into(),
+        "json".into(),
+    ];
+    args.extend(extra.iter().map(|s| s.to_string()));
+    args.extend(input_options.iter().cloned());
+    args.push(input.to_string());
 
     let output = Command::new(&bin)
         .args(&args)
@@ -402,5 +467,36 @@ mod tests {
             (d.as_secs_f64() - 1.0).abs() < 0.2,
             "duração ~1s, veio {d:?}"
         );
+    }
+
+    #[test]
+    fn parse_audio_tracks_filtra_so_audio() {
+        // JSON mínimo de `-show_streams` com vídeo, 2 áudios e 1 legenda.
+        let json = r#"{
+            "streams": [
+                { "index": 0, "codec_type": "video", "codec_name": "h264" },
+                { "index": 1, "codec_type": "audio", "codec_name": "aac",
+                  "channels": 2, "disposition": { "default": 1 },
+                  "tags": { "language": "jpn" } },
+                { "index": 2, "codec_type": "audio", "codec_name": "aac",
+                  "channels": 1, "disposition": { "default": 0 } },
+                { "index": 3, "codec_type": "subtitle", "codec_name": "subrip" }
+            ]
+        }"#;
+        let tracks = parse_audio_tracks(json).unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[0].index, 1);
+        assert_eq!(tracks[0].lang.as_deref(), Some("jpn"));
+        assert!(tracks[0].default);
+        assert_eq!(tracks[1].index, 2);
+        assert!(!tracks[1].default);
+    }
+
+    #[test]
+    fn parse_audio_tracks_json_invalido_e_erro() {
+        assert!(matches!(
+            parse_audio_tracks("não é json"),
+            Err(AudioError::Json(_))
+        ));
     }
 }

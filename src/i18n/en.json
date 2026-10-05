@@ -2,6 +2,7 @@
   "app.import": "Import",
   "app.models": "Models",
   "app.settings": "Settings",
+  "app.network": "Network",
   "app.comingSoon": "Coming soon.",
   "nav.main": "Main navigation",
   "common.ready": "Ready",
@@ -254,5 +255,24 @@
   "errors.configInvalid.title": "Invalid configuration",
   "errors.configInvalid.message": "The configuration file is corrupted or invalid. The app will use default settings.",
   "errors.configSerialize.title": "Failed to save settings",
-  "errors.configSerialize.message": "Could not save the settings."
+  "errors.configSerialize.message": "Could not save the settings.",
+
+  "net.title": "Local network",
+  "net.aria": "Local network server",
+  "net.hint": "The server lets the GoAnime TV app (TV or phone) send an episode to this PC to generate subtitles and receive the finished SRT over the local network.",
+  "net.running": "Server on",
+  "net.stopped": "Server off",
+  "net.copy": "Copy address",
+  "net.copied": "Address copied.",
+  "net.pcName": "PC name",
+  "net.port": "Port",
+  "net.savePort": "Save port",
+  "net.portInvalid": "Invalid port (use 1024–65535).",
+  "net.qrTitle": "Pairing QR",
+  "net.qrHint": "On a phone, point the camera at the code. On a TV (no camera), type the address shown above.",
+  "net.qrUnavailable": "QR unavailable — the server must be on.",
+  "net.remoteJobs": "App jobs (remote)",
+  "net.remoteHint": "Items sent by GoAnime TV over the local network.",
+  "net.refresh": "Refresh",
+  "net.noRemote": "No remote jobs yet."
 }

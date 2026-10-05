@@ -12,6 +12,10 @@ pub mod hardware;
 pub mod logging;
 #[allow(dead_code)] // download_file/whisper_dir consumidos por 1.9 e Fase 2
 mod model_manager;
+/// Servidor HTTP na rede local (Fase 2) — gated em `stt` porque enfileira jobs
+/// no pipeline (que depende de `stt`).
+#[cfg(feature = "stt")]
+pub mod net;
 #[cfg(feature = "stt")]
 pub mod pipeline;
 pub mod smoke;
@@ -83,6 +87,30 @@ pub fn run() {
             );
             let tier = hardware::tier::tier_for(&hw);
             tracing::info!("tier de hardware: {:?}", tier);
+
+            // Fase 2 — servidor de rede local: recarrega a fila persistida do
+            // disco e sobe o HTTP embutido (se habilitado na config).
+            #[cfg(feature = "stt")]
+            {
+                let net_handle = app.handle().clone();
+                pipeline::queue::restore(&net_handle);
+                if cfg.net.enabled {
+                    match net::start(net_handle, &cfg.net) {
+                        Ok(info) => tracing::info!(
+                            "LegendAI disponível para o app remoto em http://{}:{} (protocolo v{})",
+                            info.host,
+                            info.port,
+                            net::dto::PROTOCOL
+                        ),
+                        Err(e) => {
+                            tracing::error!("falha ao configurar o servidor de rede: {e}")
+                        }
+                    }
+                } else {
+                    tracing::info!("servidor de rede desativado na config");
+                }
+            }
+
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 for name in [ffmpeg::FFMPEG, ffmpeg::FFPROBE] {
@@ -136,7 +164,15 @@ pub fn run() {
             #[cfg(feature = "stt")]
             pipeline::queue::queue_cancel,
             #[cfg(feature = "stt")]
-            pipeline::queue::queue_remove
+            pipeline::queue::queue_remove,
+            #[cfg(feature = "stt")]
+            net::net_info,
+            #[cfg(feature = "stt")]
+            net::net_status,
+            #[cfg(feature = "stt")]
+            net::net_set_port,
+            #[cfg(feature = "stt")]
+            net::net_qr_svg
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

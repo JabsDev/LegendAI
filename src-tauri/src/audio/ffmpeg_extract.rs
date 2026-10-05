@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -70,6 +71,148 @@ pub fn extract_wav(
             source,
         })?;
 
+    finalize_extraction(output, out_path, &video_path.display().to_string())
+}
+
+/// Cabeçalhos HTTP que o app envia no `POST /v1/jobs` → opções de entrada do
+/// ffmpeg/ffprobe. `User-Agent` vira `-user_agent` (ffmpeg tem opção dedicada);
+/// os demais viram um único `-headers "K: V\r\n..."`. `forced_format` (ex:
+/// `dash`) entra como `-f` antes do `-i` para streams cujo content-type não
+/// permite a auto-detecção pela extensão (caso AnimeFire `.jpg`).
+///
+/// Sanitiza para nunca injetar quebras de linha: chaves vazias/com `:`/CR/LF e
+/// valores com CR/LF são descartados (proteção contra header injection — nunca
+/// usamos shell, os args vão em array).
+pub(crate) fn url_input_options(
+    headers: &HashMap<String, String>,
+    forced_format: Option<&str>,
+) -> Vec<String> {
+    let mut opts: Vec<String> = Vec::new();
+    let mut block = String::new();
+    let mut user_agent: Option<&str> = None;
+    for (key, value) in headers {
+        let valid_key = !key.is_empty() && !key.contains(['\r', '\n', ':']);
+        if !valid_key || value.contains(['\r', '\n']) {
+            warn!("cabeçalho HTTP descartado por conter caractere inválido");
+            continue;
+        }
+        if key.eq_ignore_ascii_case("user-agent") {
+            user_agent = Some(value.as_str());
+        } else {
+            block.push_str(key);
+            block.push_str(": ");
+            block.push_str(value);
+            block.push_str("\r\n");
+        }
+    }
+    if !block.is_empty() {
+        opts.push("-headers".into());
+        opts.push(block);
+    }
+    if let Some(ua) = user_agent {
+        opts.push("-user_agent".into());
+        opts.push(ua.into());
+    }
+    if let Some(fmt) = forced_format {
+        opts.push("-f".into());
+        opts.push(fmt.into());
+    }
+    opts
+}
+
+/// Extrai a trilha de áudio `stream_index` de uma **URL** (HTTP/HLS/DASH) para
+/// `out_path` como WAV 16 kHz mono, replicando [`extract_wav`] com cabeçalhos
+/// HTTP e formato forçado opcional (Fase 2 — origem remota).
+#[allow(dead_code)] // consumida pelo pipeline da fila remota (Fase 2)
+pub fn extract_wav_url(
+    url: &str,
+    headers: &HashMap<String, String>,
+    forced_format: Option<&str>,
+    stream_index: usize,
+    out_path: &Path,
+) -> Result<(PathBuf, Duration), AudioError> {
+    let bin = ffmpeg::binary_path(FFMPEG)?;
+    let map = format!("0:{stream_index}");
+    let out = out_path.to_string_lossy().into_owned();
+    let mut args: Vec<String> = vec!["-y".into()];
+    args.extend(url_input_options(headers, forced_format));
+    args.push("-i".into());
+    args.push(url.into());
+    args.extend(
+        [
+            "-map",
+            &map,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            &out,
+        ]
+        .into_iter()
+        .map(String::from),
+    );
+    let output = Command::new(&bin)
+        .args(&args)
+        .output()
+        .map_err(|source| AudioError::Spawn {
+            command: bin.clone(),
+            source,
+        })?;
+    finalize_extraction(output, out_path, url)
+}
+
+/// Extrai o áudio de um arquivo **enviado pelo app** (Fase 5 — fallback de
+/// upload) para `out_path` como WAV 16 kHz mono. `input_format` é o demuxer do
+/// ffmpeg (`-f`): o app envia PCM cru 16 kHz mono (`s16le`), então a taxa e os
+/// canais são declarados antes do `-i`; formatos de container (ex: `matroska`)
+/// são auto-detectados pelo ffmpeg e só passam o `-f`.
+///
+/// Reaproveita [`finalize_extraction`] (validação de saída + duração).
+#[allow(dead_code)] // consumida pelo pipeline da fila remota (Fase 5)
+pub fn extract_wav_upload(
+    input_path: &Path,
+    input_format: Option<&str>,
+    out_path: &Path,
+) -> Result<(PathBuf, Duration), AudioError> {
+    let bin = ffmpeg::binary_path(FFMPEG)?;
+    let input = input_path.to_string_lossy().into_owned();
+    let out = out_path.to_string_lossy().into_owned();
+    let mut args: Vec<String> = vec!["-y".into()];
+    if let Some(fmt) = input_format.map(str::trim).filter(|f| !f.is_empty()) {
+        args.push("-f".into());
+        args.push(fmt.into());
+        // PCM cru não carrega taxa/canais no container — declara o contrato do
+        // app (16 kHz mono s16le) antes do `-i`.
+        if fmt.eq_ignore_ascii_case("s16le") || fmt.eq_ignore_ascii_case("pcm_s16le") {
+            args.extend(["-ar", "16000", "-ac", "1"].into_iter().map(String::from));
+        }
+    }
+    args.push("-i".into());
+    args.push(input.clone());
+    args.extend(
+        ["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", &out]
+            .into_iter()
+            .map(String::from),
+    );
+    let output = Command::new(&bin)
+        .args(&args)
+        .output()
+        .map_err(|source| AudioError::Spawn {
+            command: bin.clone(),
+            source,
+        })?;
+    finalize_extraction(output, out_path, &input)
+}
+
+/// Valida a saída do ffmpeg e devolve (wav, duração) — trecho comum a
+/// [`extract_wav`], [`extract_wav_url`] e [`extract_wav_upload`].
+fn finalize_extraction(
+    output: std::process::Output,
+    out_path: &Path,
+    label: &str,
+) -> Result<(PathBuf, Duration), AudioError> {
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     debug!("stderr do ffmpeg:\n{stderr}");
 
@@ -81,10 +224,7 @@ pub fn extract_wav(
     }
 
     let duration = parse_duration(&stderr).unwrap_or_else(|| {
-        warn!(
-            "duração não detectada na saída do ffmpeg para {}",
-            video_path.display()
-        );
+        warn!("duração não detectada na saída do ffmpeg para {label}");
         Duration::ZERO
     });
 
@@ -235,6 +375,42 @@ mod tests {
     }
 
     /// Vídeo com 2 trilhas de áudio PCM (sem áudio) — não expõe.
+    /// Fase 5 — fallback de upload: PCM cru 16 kHz mono (formato que o app
+    /// envia) vira WAV 16 kHz mono válido.
+    #[test]
+    fn upload_pcm_cru_vira_wav_16khz_mono() {
+        let Some(bin) = ffmpeg_path() else { return };
+        let pcm = temp_path("upload.pcm");
+        let out = temp_path("upload-out.wav");
+        // Gera PCM cru s16le 16 kHz mono (contrato do app).
+        let gen = Command::new(bin)
+            .args([
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=1",
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-f",
+                "s16le",
+                &pcm.to_string_lossy(),
+            ])
+            .output()
+            .unwrap();
+        assert!(gen.status.success(), "fixture PCM falhou");
+
+        let (wav, duration) = extract_wav_upload(&pcm, Some("s16le"), &out).unwrap();
+        assert_eq!(wav, out);
+        assert!(duration.as_secs_f64().abs() - 1.0 < 0.2, "{duration:?}");
+        assert_wav_16000_mono_s16(&out);
+
+        std::fs::remove_file(&pcm).ok();
+        std::fs::remove_file(&out).ok();
+    }
+
     #[test]
     fn parse_duration_de_stderr() {
         let stderr = "  Duration: 00:01:30.25, start: 0.000000, bitrate: 706 kb/s\n";
@@ -304,5 +480,61 @@ mod tests {
         std::fs::remove_file(&out1).ok();
         std::fs::remove_file(&out2).ok();
         std::fs::remove_file(&src).ok();
+    }
+
+    fn headers(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn url_input_options_separa_user_agent_e_headers() {
+        let opts = url_input_options(
+            &headers(&[
+                ("Referer", "https://animegg.org/"),
+                ("User-Agent", "Mozilla/5.0"),
+            ]),
+            None,
+        );
+        // Ordem do HashMap não é determinística → procura os elementos.
+        assert!(opts.iter().any(|a| a == "-user_agent"));
+        assert!(opts.iter().any(|a| a == "Mozilla/5.0"));
+        assert!(opts.iter().any(|a| a == "-headers"));
+        assert!(opts
+            .iter()
+            .any(|a| a.contains("Referer: https://animegg.org/")));
+        // User-Agent não entra no bloco de -headers.
+        assert!(!opts.iter().any(|a| a.contains("User-Agent:")));
+    }
+
+    #[test]
+    fn url_input_options_inclui_formato_forcado() {
+        let opts = url_input_options(&headers(&[]), Some("dash"));
+        // `-f dash` deve aparecer antes do `-i` (o chamador concatena depois).
+        let f = opts.iter().position(|a| a == "-f").unwrap();
+        assert_eq!(opts[f + 1], "dash");
+    }
+
+    #[test]
+    fn url_input_options_sanitiza_quebras_de_linha() {
+        // Chave com CR/LF ou valor com CR/LF são descartados (header injection).
+        let opts = url_input_options(
+            &headers(&[
+                ("X-Valid", "ok"),
+                ("X-Bad\r\nInjected", "x"),
+                ("X-Value", "a\r\nInjected: 1"),
+            ]),
+            None,
+        );
+        let block = opts
+            .iter()
+            .find(|a| a.contains("X-Valid"))
+            .expect("header válido mantido");
+        assert!(block.contains("X-Valid: ok"));
+        assert!(!block.contains("Injected"));
+        assert!(block.contains("X-Value: a\r\n") || !block.contains("X-Value"));
+        assert!(opts.iter().all(|a| !a.contains("Injected")));
     }
 }

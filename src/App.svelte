@@ -8,6 +8,7 @@
   import ImportDropzone, { type VideoInspection } from "./components/import/ImportDropzone.svelte";
   import TrackSelector from "./components/import/TrackSelector.svelte";
   import QueueView from "./components/queue/QueueView.svelte";
+  import NetworkView from "./components/net/NetworkView.svelte";
   import TranslationSettings from "./components/settings/TranslationSettings.svelte";
   import GlossaryEditor from "./components/settings/GlossaryEditor.svelte";
   import ErrorToast, { showError } from "./components/common/ErrorToast.svelte";
@@ -15,7 +16,7 @@
   import { getLang, setLang } from "./i18n/index.svelte";
   import { getPrefs, loadPrefs, savePrefs, setTheme } from "./lib/prefs.svelte";
 
-  type Route = "import" | "queue" | "models" | "settings";
+  type Route = "import" | "queue" | "models" | "network" | "settings";
 
   interface PipelineSource {
     type: "audio" | "embedded";
@@ -27,6 +28,7 @@
     import: t("app.import"),
     queue: t("queue.title"),
     models: t("app.models"),
+    network: t("app.network"),
     settings: t("app.settings"),
   });
 
@@ -149,6 +151,8 @@
           <QueueView />
         {:else if route === "models"}
           <ModelList />
+        {:else if route === "network"}
+          <NetworkView />
         {:else}
           <section class="settings" aria-label={TITLES[route]}>
             <h2>{t("app.settings")}</h2>

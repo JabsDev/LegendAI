@@ -2,6 +2,7 @@
   "app.import": "Importar",
   "app.models": "Modelos",
   "app.settings": "Configurações",
+  "app.network": "Rede",
   "app.comingSoon": "Em breve.",
   "nav.main": "Navegação principal",
   "common.ready": "Pronto",
@@ -254,5 +255,24 @@
   "errors.configInvalid.title": "Configuração inválida",
   "errors.configInvalid.message": "O arquivo de configuração está corrompido ou inválido. O aplicativo usará as configurações padrão.",
   "errors.configSerialize.title": "Falha ao salvar configurações",
-  "errors.configSerialize.message": "Não foi possível salvar as configurações."
+  "errors.configSerialize.message": "Não foi possível salvar as configurações.",
+
+  "net.title": "Rede local",
+  "net.aria": "Servidor de rede local",
+  "net.hint": "O servidor permite que o app GoAnime TV (TV ou celular) envie o episódio para este PC gerar a legenda e receba o SRT pronto pela rede.",
+  "net.running": "Servidor ligado",
+  "net.stopped": "Servidor desligado",
+  "net.copy": "Copiar endereço",
+  "net.copied": "Endereço copiado.",
+  "net.pcName": "Nome do PC",
+  "net.port": "Porta",
+  "net.savePort": "Salvar porta",
+  "net.portInvalid": "Porta inválida (use 1024–65535).",
+  "net.qrTitle": "QR de pareamento",
+  "net.qrHint": "No celular, aponte a câmera para o código. Na TV (sem câmera), digite o endereço mostrado acima.",
+  "net.qrUnavailable": "QR indisponível — o servidor precisa estar ligado.",
+  "net.remoteJobs": "Jobs do app (remotos)",
+  "net.remoteHint": "Itens enviados pelo GoAnime TV pela rede local.",
+  "net.refresh": "Atualizar",
+  "net.noRemote": "Nenhum job remoto ainda."
 }

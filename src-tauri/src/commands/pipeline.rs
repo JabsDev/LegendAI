@@ -34,9 +34,14 @@ use crate::stt::{SttOptions, WhisperModel};
 use crate::subtitles::srt::{parse_srt, to_srt};
 use crate::translate::TranslationEngineFactory;
 
-/// Origem do pipeline: trilha de áudio a transcrever ou legenda embutida
-/// (pula o STT). Serde `tag = "type"` — o frontend envia
-/// `{ type: "audio", track_index }` ou `{ type: "embedded", stream_index }`.
+/// Origem do pipeline: trilha de áudio a transcrever, legenda embutida (pula o
+/// STT), URL remota (Fase 2 — o ffmpeg baixa/abre a URL diretamente com os
+/// cabeçalhos HTTP do job), áudio já extraído pelo app (Fase 5 — fallback de
+/// upload para DASH/token) ou um SRT pronto (Fase 5 — rota S remota, só
+/// traduz). Serde `tag = "type"` — o frontend envia
+/// `{ type: "audio", track_index }`, `{ type: "embedded", stream_index }`,
+/// `{ type: "url", url, headers }`, `{ type: "upload", path, format }` ou
+/// `{ type: "srt", srt, source_lang }`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PipelineSource {
@@ -44,10 +49,36 @@ pub enum PipelineSource {
     Audio { track_index: usize },
     /// Usar a legenda embutida (índice GLOBAL da stream).
     Embedded { stream_index: u32 },
+    /// Transcrever uma URL (HTTP/HLS/DASH). O ffmpeg abre a URL usando os
+    /// cabeçalhos HTTP do job (ex: `Referer`/`User-Agent`); a trilha de áudio é
+    /// escolhida no momento do job (a default, senão a primeira).
+    Url {
+        url: String,
+        #[serde(default)]
+        headers: HashMap<String, String>,
+    },
+    /// Áudio já extraído pelo app e enviado por upload (Fase 5 — fallback para
+    /// streams que o ffmpeg do PC não abre, ex.: DASH servido como `.jpg`).
+    /// `path` é o arquivo no diretório de uploads do PC; `format` é o formato
+    /// de entrada do ffmpeg (`s16le` = PCM cru 16 kHz mono, o que o app envia).
+    Upload {
+        path: String,
+        #[serde(default)]
+        format: Option<String>,
+    },
+    /// SRT já pronto (Fase 5 — rota S remota: candidata EN/ES da fonte). O PC
+    /// pula extração/STT e só traduz. `source_lang` é o idioma do SRT (o app
+    /// detecta; `auto` faz o PC usar a config).
+    #[serde(rename = "srt")]
+    InlineSrt {
+        srt: String,
+        #[serde(default)]
+        source_lang: Option<String>,
+    },
 }
 
 /// Opções do pipeline enviadas pela tela de importação.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PipelineOptions {
     /// Traduzir após transcrever (default: sim — campo omitido vira `true`).
@@ -195,18 +226,53 @@ fn run_job(
     let hw = detect();
     let start = std::time::Instant::now();
     let input = Path::new(input_path);
-    let out_path = resolve_out_path(input, opts.out_path.as_deref()).map_err(job_error)?;
-    let mut duration_secs = crate::audio::ffprobe::probe_duration(input)
-        .ok()
-        .flatten()
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0);
+    // Origem remota (Fase 2/5): URL, áudio enviado por upload ou SRT pronto.
+    // Não há arquivo local no aparelho e a saída vai para o diretório remoto.
+    let is_remote = matches!(
+        source,
+        PipelineSource::Url { .. }
+            | PipelineSource::Upload { .. }
+            | PipelineSource::InlineSrt { .. }
+    );
+    // Saída: para origem remota sem `out_path` explícito, grava no diretório de
+    // saída persistente da fila remota (`config_dir/legendai/remote/`), que o
+    // servidor HTTP lê em `GET /v1/jobs/{id}/srt`.
+    let out_path = match opts
+        .out_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        Some(p) => PathBuf::from(p),
+        None if is_remote => remote_out_path(job_id),
+        None => resolve_out_path(input, None).map_err(job_error)?,
+    };
+    if let Some(dir) = out_path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| job_error(format!("falha ao preparar a saída: {e}")))?;
+    }
+    let mut duration_secs = if is_remote {
+        0.0
+    } else {
+        crate::audio::ffprobe::probe_duration(input)
+            .ok()
+            .flatten()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0)
+    };
     let mut source_lang = crate::domain::Language::from_code(&config.source_lang);
 
     emit_log(
         app,
         job_id,
-        &format!("iniciando job {job_id} — {}", input.display()),
+        &format!(
+            "iniciando job {job_id} — {}",
+            if is_remote {
+                input_path.to_string()
+            } else {
+                input.display().to_string()
+            }
+        ),
     );
     // Etapa 1 — extração (áudio ou legenda embutida).
     ensure_not_cancelled(token)?;
@@ -217,7 +283,7 @@ fn run_job(
         .map_err(|e| job_error(format!("falha ao criar diretório temporário: {e}")))?;
     let _guard = TempCleanup(temp_dir.clone());
 
-    let subtitles: Vec<Subtitle>;
+    let mut subtitles: Vec<Subtitle>;
     match source {
         PipelineSource::Embedded { stream_index } => {
             subtitles = load_embedded_subtitle(input, *stream_index)
@@ -235,11 +301,52 @@ fn run_job(
                 &format!("extração concluída — {} blocos", subtitles.len()),
             );
         }
-        PipelineSource::Audio { track_index } => {
+        PipelineSource::InlineSrt {
+            srt,
+            source_lang: srt_lang,
+        } => {
+            // Fase 5 — rota S remota: o SRT chega pronto; pula extração e STT.
+            subtitles = parse_srt(srt).map_err(|e| job_error(e.to_string()))?;
+            if subtitles.is_empty() {
+                return Err(job_error(
+                    "a legenda enviada não contém nenhuma fala".into(),
+                ));
+            }
+            // Idioma do SRT: o informado na origem; senão o override do job;
+            // senão a config. `resolve_source_lang` (3.10) lê o idioma concreto
+            // do bloco e só cai na config quando for `auto`.
+            let lang = srt_lang
+                .as_deref()
+                .or(opts.source_lang.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && *s != "auto")
+                .map(crate::domain::Language::from_code)
+                .unwrap_or_else(|| crate::domain::Language::from_code(&config.source_lang));
+            for sub in &mut subtitles {
+                sub.language = lang.clone();
+                for seg in &mut sub.segments {
+                    seg.lang = lang.clone();
+                }
+            }
+            source_lang = lang;
+            // Duração = fim do último bloco (usada no clamp do SRT original).
+            duration_secs = subtitles
+                .iter()
+                .flat_map(|s| s.segments.iter())
+                .map(|seg| seg.end_ms.as_ms() as f64 / 1000.0)
+                .fold(0.0_f64, f64::max);
+            emit_progress(app, job_id, PipelineStep::Extract, 100, None);
+            emit_log(
+                app,
+                job_id,
+                &format!("SRT recebido — {} blocos", subtitles.len()),
+            );
+        }
+        PipelineSource::Audio { .. }
+        | PipelineSource::Url { .. }
+        | PipelineSource::Upload { .. } => {
             let wav = temp_dir.join("audio.wav");
-            let (_, audio_duration) =
-                crate::audio::ffmpeg_extract::extract_wav(input, *track_index, &wav)
-                    .map_err(|e| crate::errors::LegendaiError::from(e).to_detail())?;
+            let (_, audio_duration) = extract_audio_source(source, input, &wav)?;
             if audio_duration.as_secs_f64() > 0.0 {
                 duration_secs = audio_duration.as_secs_f64();
             }
@@ -449,7 +556,9 @@ fn run_job(
             job_id,
             &format!("SRT gravado em {}", out_path.display()),
         );
-        persist_recent(input_path, &out_path);
+        if !is_remote {
+            persist_recent(input_path, &out_path);
+        }
 
         let stats = crate::stats::compute_stats(
             start.elapsed().as_secs_f64(),
@@ -499,7 +608,9 @@ fn run_job(
             job_id,
             &format!("SRT gravado em {}", out_path.display()),
         );
-        persist_recent(input_path, &out_path);
+        if !is_remote {
+            persist_recent(input_path, &out_path);
+        }
 
         let stats = crate::stats::compute_stats(
             start.elapsed().as_secs_f64(),
@@ -648,6 +759,100 @@ fn resolve_out_path(input: &Path, given: Option<&str>) -> Result<PathBuf, String
     Ok(dir.join(format!("{}.srt", stem.to_string_lossy())))
 }
 
+/// Caminho persistente do SRT de um job remoto (Fase 2). O servidor HTTP lê
+/// este arquivo em `GET /v1/jobs/{id}/srt`. Fica em
+/// `config_dir/legendai/remote/<job_id>.srt` — fora do temp dir do job, que é
+/// apagado ao terminar.
+pub(crate) fn remote_out_path(job_id: &str) -> PathBuf {
+    dirs::config_dir()
+        .map(|d| {
+            d.join("legendai")
+                .join("remote")
+                .join(format!("{job_id}.srt"))
+        })
+        .unwrap_or_else(|| std::env::temp_dir().join(format!("legendai-remote-{job_id}.srt")))
+}
+
+/// Extrai o WAV 16 kHz mono da origem — arquivo local ([`PipelineSource::Audio`])
+/// ou URL remota ([`PipelineSource::Url`]). Para URL, o ffmpeg abre a URL com os
+/// cabeçalhos HTTP do job; a trilha é escolhida pela heurística default/primeira
+/// e, se a auto-detecção falhar (DASH servido como `.jpg`), re-tenta `-f dash`.
+fn extract_audio_source(
+    source: &PipelineSource,
+    input: &Path,
+    wav: &Path,
+) -> Result<(PathBuf, std::time::Duration), ErrorDetail> {
+    match source {
+        PipelineSource::Audio { track_index } => {
+            crate::audio::ffmpeg_extract::extract_wav(input, *track_index, wav)
+                .map_err(|e| crate::errors::LegendaiError::from(e).to_detail())
+        }
+        PipelineSource::Url { url, headers } => {
+            let probe =
+                crate::audio::ffprobe::probe_remote_tracks(url, headers).map_err(stream_detail)?;
+            if probe.tracks.is_empty() {
+                return Err(crate::errors::LegendaiError::NoAudioTrack.to_detail());
+            }
+            let track = choose_audio_track(&probe.tracks);
+            match crate::audio::ffmpeg_extract::extract_wav_url(
+                url,
+                headers,
+                probe.forced_format.as_deref(),
+                track,
+                wav,
+            ) {
+                Ok(r) => Ok(r),
+                Err(first) if probe.forced_format.is_none() => {
+                    crate::audio::ffmpeg_extract::extract_wav_url(
+                        url,
+                        headers,
+                        Some("dash"),
+                        track,
+                        wav,
+                    )
+                    .map_err(|_| stream_detail(first))
+                }
+                Err(e) => Err(stream_detail(e)),
+            }
+        }
+        // Fase 5 — áudio já extraído pelo app (upload). O formato vem do app
+        // (`s16le` = PCM cru 16 kHz mono); sem formato, o ffmpeg auto-detecta.
+        PipelineSource::Upload { path, format } => {
+            crate::audio::ffmpeg_extract::extract_wav_upload(
+                Path::new(path),
+                format.as_deref(),
+                wav,
+            )
+            .map_err(|e| crate::errors::LegendaiError::from(e).to_detail())
+        }
+        _ => Err(job_error("origem inválida para extração de áudio".into())),
+    }
+}
+
+/// Erro ao abrir/extrair uma URL remota (DASH servido como `.jpg`, token
+/// expirado, CDN recusando): código estável `unsupported_stream` para o app
+/// oferecer o fallback de upload de áudio (Fase 5). A mensagem não expõe
+/// caminhos internos; o contexto fica no log.
+fn stream_detail(e: crate::audio::ffmpeg_extract::AudioError) -> ErrorDetail {
+    tracing::warn!("falha ao abrir a fonte remota: {e}");
+    ErrorDetail {
+        code: "unsupported_stream",
+        message: "O PC não conseguiu abrir essa fonte de mídia.".into(),
+        hint: Some("Envie o áudio do aparelho (fallback) ou tente outra qualidade."),
+    }
+}
+
+/// Escolhe a trilha de áudio de uma origem remota: a marcada como `default`;
+/// senão a primeira.
+fn choose_audio_track(tracks: &[crate::audio::ffprobe::AudioTrack]) -> usize {
+    tracks
+        .iter()
+        .find(|t| t.default)
+        .or_else(|| tracks.first())
+        .map(|t| t.index as usize)
+        .unwrap_or(0)
+}
+
 fn ensure_not_cancelled(token: &CancellationToken) -> Result<(), ErrorDetail> {
     if token.is_cancelled() {
         Err(job_error("processamento cancelado".into()))
@@ -786,6 +991,80 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(back, PipelineSource::Audio { track_index: 3 }));
+    }
+
+    #[test]
+    fn source_url_serializa_com_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("Referer".to_string(), "https://animegg.org/".to_string());
+        headers.insert("User-Agent".to_string(), "Mozilla/5.0".to_string());
+        let source = PipelineSource::Url {
+            url: "https://cdn/anime.m3u8".into(),
+            headers,
+        };
+        let v = serde_json::to_value(&source).unwrap();
+        assert_eq!(v["type"], "url");
+        assert_eq!(v["url"], "https://cdn/anime.m3u8");
+        assert_eq!(v["headers"]["Referer"], "https://animegg.org/");
+
+        // Headers ausentes no JSON viram mapa vazio (não quebra o parse).
+        let back: PipelineSource = serde_json::from_value(serde_json::json!({
+            "type": "url", "url": "https://cdn/a.mp4"
+        }))
+        .unwrap();
+        assert!(matches!(back, PipelineSource::Url { ref url, .. } if url == "https://cdn/a.mp4"));
+    }
+
+    #[test]
+    fn source_upload_e_srt_serializam_com_tag_de_tipo() {
+        let upload = PipelineSource::Upload {
+            path: "/tmp/a.pcm".into(),
+            format: Some("s16le".into()),
+        };
+        let v = serde_json::to_value(&upload).unwrap();
+        assert_eq!(v["type"], "upload");
+        assert_eq!(v["path"], "/tmp/a.pcm");
+        assert_eq!(v["format"], "s16le");
+
+        let srt = PipelineSource::InlineSrt {
+            srt: "1\n00:00:01,000 --> 00:00:02,000\nHi\n".into(),
+            source_lang: Some("en".into()),
+        };
+        let v = serde_json::to_value(&srt).unwrap();
+        assert_eq!(v["type"], "srt");
+        assert_eq!(v["source_lang"], "en");
+
+        // Campos opcionais ausentes não quebram o parse.
+        let back: PipelineSource =
+            serde_json::from_value(serde_json::json!({ "type": "upload", "path": "/x" })).unwrap();
+        assert!(matches!(back, PipelineSource::Upload { format: None, .. }));
+    }
+
+    #[test]
+    fn choose_audio_track_prefere_default_e_cai_na_primeira() {
+        use crate::audio::ffprobe::AudioTrack;
+        let tracks = vec![
+            AudioTrack {
+                index: 1,
+                codec: "aac".into(),
+                lang: None,
+                channels: 2,
+                default: false,
+            },
+            AudioTrack {
+                index: 2,
+                codec: "aac".into(),
+                lang: None,
+                channels: 2,
+                default: true,
+            },
+        ];
+        assert_eq!(choose_audio_track(&tracks), 2);
+        // Sem default: primeira da lista.
+        let mut no_default = tracks;
+        no_default[1].default = false;
+        assert_eq!(choose_audio_track(&no_default), 1);
+        assert_eq!(choose_audio_track(&[]), 0);
     }
 
     #[test]

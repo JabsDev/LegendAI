@@ -1,7 +1,7 @@
 <script lang="ts">
   import { t } from "../../lib/t";
 
-  type Route = "import" | "queue" | "models" | "settings";
+  type Route = "import" | "queue" | "models" | "network" | "settings";
 
   let { active, onNavigate }: { active: Route; onNavigate: (route: Route) => void } = $props();
 
@@ -9,6 +9,7 @@
     { id: "import", label: t("app.import") },
     { id: "queue", label: t("queue.title") },
     { id: "models", label: t("app.models") },
+    { id: "network", label: t("app.network") },
     { id: "settings", label: t("app.settings") },
   ] as { id: Route; label: string }[]);
 </script>

@@ -22,6 +22,9 @@ tauri-build = { version = "2", features = [] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# `tower` fornece ServiceExt::oneshot para os testes de rota (Fase 2) chamarem o
+# Router do axum sem subir um socket de verdade.
+tower = { version = "0.5", features = ["util"] }
 
 # bench_hy usa o módulo `translate::llm` (gated por `llama`) — só compila com a feature.
 [[example]]
@@ -69,6 +72,10 @@ thiserror = "2"
 reqwest = { version = "0.13", features = ["json", "stream"] }
 futures-util = "0.3"
 tokio-util = "0.7"
+# Servidor HTTP embutido (Fase 2 — "LegendAI na rede local"). O Tauri já roda um
+# runtime tokio; o axum sobe nele via `tauri::async_runtime::spawn`.
+axum = "0.8"
+tokio = { version = "1", features = ["net", "rt-multi-thread", "sync", "macros"] }
 sha2 = "0.11"
 hf-hub = { version = "1.0.0", features = ["blocking"] }
 whisper-rs = { version = "0.16", optional = true }
@@ -83,3 +90,4 @@ parakeet-rs = { version = "0.3.7", optional = true }
 # são distribuídos). Estático embute tudo no binário: instala e funciona.
 # `openmp` mantido (default) para paralelismo CPU.
 llama-cpp-4 = { version = "0.6.1", default-features = false, features = ["openmp"] }
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }

@@ -35,6 +35,24 @@ pub struct AppConfig {
     /// Últimos arquivos abertos/processados (tarefa 4.10), topo = mais recente.
     pub recent_files: Vec<String>,
     pub ui: UiPrefs,
+    /// Servidor HTTP na rede local (Fase 2): permite que o app GoAnime TV
+    /// enfileire jobs neste PC e baixe o SRT pronto.
+    pub net: NetConfig,
+}
+
+/// Configuração do servidor de rede local (Fase 2). Campos novos precisam de
+/// `#[serde(default)]` (via derive) para não quebrar configs antigas.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetConfig {
+    /// Liga/desliga o servidor embutido. Default `true` (LAN confiável — sem
+    /// autenticação, decisão de produto documentada no plano).
+    pub enabled: bool,
+    /// Porta do servidor (0.0.0.0). Default 8765 — evita a 8090 usada pelo
+    /// OAuth loopback do app.
+    pub port: u16,
+    /// Nome exibido no pareamento (QR). `None` → hostname da máquina.
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -82,6 +100,17 @@ impl Default for AppConfig {
             translation_options: TranslationOptions::default(),
             recent_files: Vec::new(),
             ui: UiPrefs::default(),
+            net: NetConfig::default(),
+        }
+    }
+}
+
+impl Default for NetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: 8765,
+            name: None,
         }
     }
 }
@@ -440,5 +469,43 @@ mod tests {
         cfg.record_recent("/videos/b.mp4", Path::new("/out2/b.srt"));
         assert_eq!(cfg.recent_files, vec!["/videos/b.mp4", "/videos/a.mp4"]);
         assert_eq!(cfg.ui.last_output_dir.as_deref(), Some("/out2"));
+    }
+
+    #[test]
+    fn net_config_round_trip_e_default() {
+        // Default documentado (Fase 2): servidor ligado na porta 8765.
+        let cfg = AppConfig::default();
+        assert!(cfg.net.enabled);
+        assert_eq!(cfg.net.port, 8765);
+        assert_eq!(cfg.net.name, None);
+
+        let dir = temp_dir("net-config");
+        let path = dir.join("config.toml");
+        let cfg = AppConfig {
+            net: NetConfig {
+                enabled: false,
+                port: 9000,
+                name: Some("PC-Jabs".into()),
+            },
+            ..Default::default()
+        };
+        cfg.save_to(&path).unwrap();
+        let loaded = AppConfig::load_from(&path).unwrap();
+        assert!(!loaded.net.enabled);
+        assert_eq!(loaded.net.port, 9000);
+        assert_eq!(loaded.net.name.as_deref(), Some("PC-Jabs"));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn net_ausente_em_config_antiga_usa_default() {
+        // Config antiga (sem `[net]`) não pode quebrar — default entra.
+        let dir = temp_dir("net-missing");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "target_lang = \"en\"\n").unwrap();
+        let cfg = AppConfig::load_from(&path).unwrap();
+        assert_eq!(cfg.net, NetConfig::default());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

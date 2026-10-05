@@ -9,7 +9,25 @@ e o versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Added
 
-- Nada pendente.
+- **Servidor HTTP embutido (`/v1`) na rede local:** o LegendAI agora sobe um
+  servidor `axum` em `0.0.0.0:<porta>` (default 8765) para o app GoAnime TV
+  enfileirar jobs e baixar o SRT pronto. Protocolo versionado (`/v1`), sem
+  autenticação (LAN confiável) e com QR de pareamento na nova aba **Rede**.
+- **Origem por URL (`PipelineSource::Url`):** o pipeline abre o stream direto
+  com os cabeçalhos HTTP do job (ffmpeg/ffprobe), com fallback `-f dash` para
+  DASH servido como `.jpg`.
+- **Fila com origem/idempotência/persistência:** itens `local`/`remote`,
+  deduplicação por `client_job_id` e snapshot em `queue.json` (restaura no boot).
+- **Fallback de upload de áudio (`PipelineSource::Upload`):** o app pode enviar
+  o áudio já extraído (`POST /v1/uploads`, PCM cru 16 kHz mono) para streams que
+  o ffmpeg não abre (DASH/token).
+- **Rota S remota (`PipelineSource::InlineSrt`):** tradução no PC de uma legenda
+  EN/ES já existente (o PC pula extração/STT).
+
+### Changed
+
+- **Aba "Rede"** no frontend: status do servidor, endereço copiável, QR (crate
+  Rust `qrcode`), edição de porta e lista de jobs remotos.
 
 ## [v0.1.13] - 2026-09-01
 

@@ -38,7 +38,7 @@
 //! multiplicaria o consumo permanente e contraria o guarda de RAM por tier
 //! (cada job já faz o swap 3.8 e dropa os modelos ao terminar).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 
@@ -68,8 +68,18 @@ pub enum QueueState {
     Cancelled,
 }
 
+/// Origem de um item da fila: job local (importação na UI) ou remoto (enviado
+/// pelo app GoAnime TV via HTTP). Fase 2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobOrigin {
+    Local,
+    Remote,
+}
+
 /// Item da fila serializado para a UI (evento `queue-updated` e `queue_list`).
-/// `source`/`options` não cruzam IPC — são usados só pelo worker.
+/// `source`/`options` não cruzam o evento de UI — são usados só pelo worker
+/// (mas são persistidos no `queue.json` para sobreviver a um restart).
 #[derive(Debug, Clone, Serialize)]
 pub struct QueueItem {
     pub id: String,
@@ -82,6 +92,18 @@ pub struct QueueItem {
     pub detail: Option<String>,
     pub summary: Option<PipelineSummary>,
     pub error: Option<ErrorDetail>,
+    /// Origem (`local`/`remote`) — Fase 2.
+    pub origin: JobOrigin,
+    /// Chave idempotente do cliente (app GoAnime TV). `None` para jobs locais.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_job_id: Option<String>,
+    /// Metadados informativos do cliente (repassados no protocolo HTTP).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anime_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub episode: Option<i64>,
+    pub created_ms: u64,
+    pub updated_ms: u64,
     #[serde(skip)]
     pub source: PipelineSource,
     #[serde(skip)]
@@ -89,12 +111,13 @@ pub struct QueueItem {
 }
 
 impl QueueItem {
-    fn new(
+    pub(crate) fn new(
         id: String,
         input_path: String,
         source: PipelineSource,
         options: PipelineOptions,
     ) -> Self {
+        let now = now_ms();
         Self {
             id,
             input_path,
@@ -104,10 +127,43 @@ impl QueueItem {
             detail: None,
             summary: None,
             error: None,
+            origin: JobOrigin::Local,
+            client_job_id: None,
+            anime_key: None,
+            episode: None,
+            created_ms: now,
+            updated_ms: now,
             source,
             options,
         }
     }
+}
+
+/// Milissegundos desde a epoch (0 se o relógio for anterior a 1970).
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Representação persistida de um item ativo (Fase 2 — `queue.json`). Só itens
+/// `pending`/`running` são persistidos; os terminais não são recarregados.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedItem {
+    id: String,
+    input_path: String,
+    source: PipelineSource,
+    options: PipelineOptions,
+    origin: JobOrigin,
+    #[serde(default)]
+    client_job_id: Option<String>,
+    #[serde(default)]
+    anime_key: Option<String>,
+    #[serde(default)]
+    episode: Option<i64>,
+    #[serde(default)]
+    created_ms: u64,
 }
 
 /// Estado global da fila: itens em ordem de enfileiramento + os itens em
@@ -203,6 +259,7 @@ pub(crate) fn update_progress(id: &str, step: PipelineStep, pct: u8, detail: Opt
         item.step = Some(step);
         item.pct = pct.clamp(0, 100);
         item.detail = detail.map(String::from);
+        item.updated_ms = now_ms();
     }
 }
 
@@ -210,6 +267,7 @@ pub(crate) fn update_progress(id: &str, step: PipelineStep, pct: u8, detail: Opt
 fn apply_finished(item: &mut QueueItem, finished: &PipelineFinished) {
     item.step = None;
     item.detail = None;
+    item.updated_ms = now_ms();
     if finished.ok {
         item.state = QueueState::Done;
         item.summary = finished.summary.clone();
@@ -238,6 +296,7 @@ fn claim_next_locked(items: &mut [QueueItem]) -> Option<QueueItem> {
     item.step = None;
     item.pct = 0;
     item.detail = None;
+    item.updated_ms = now_ms();
     items[idx] = item.clone();
     Some(item)
 }
@@ -319,9 +378,20 @@ fn worker_loop(app: tauri::AppHandle, semaphore: Arc<Semaphore>) {
                 apply_finished(entry, &finished);
             }
         }
+        // Fase 5: o áudio enviado por upload é de uso único — apaga o arquivo
+        // quando o job chega a um estado terminal. Se o PC reiniciar no meio,
+        // o item restaurado ainda aponta para o arquivo (que segue no disco).
+        if let PipelineSource::Upload { path, .. } = &item.source {
+            if let Err(e) = std::fs::remove_file(path) {
+                tracing::debug!("upload de áudio não removido ({}): {e}", path);
+            }
+        }
 
         let _ = app.emit("pipeline-finished", &finished);
         emit_queue_updated(&app);
+        // Fase 2: um item concluído sai do snapshot persistido — se o PC
+        // reiniciar depois, ele não é re-enfileirado.
+        save_snapshot();
     }
 }
 
@@ -337,14 +407,25 @@ fn next_job_id() -> String {
 
 static JOB_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Lista os itens da fila (poll inicial da UI).
+/// Lista os itens da fila (poll inicial da UI e `GET /v1/jobs`).
 #[tauri::command(rename_all = "snake_case")]
 pub fn queue_list() -> Vec<QueueItem> {
     job_queue().items.lock().unwrap().clone()
 }
 
-/// Adiciona um vídeo à fila. Retorna na hora (UI não bloqueia); um worker do
-/// pool processa quando chegar a vez, emitindo `queue-updated` e `pipeline-*`.
+/// Item pelo id (usado pelo servidor HTTP — `GET /v1/jobs/{id}`).
+pub fn queue_get(id: &str) -> Option<QueueItem> {
+    job_queue()
+        .items
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|i| i.id == id)
+        .cloned()
+}
+
+/// Adiciona um vídeo local à fila (comando da UI). Fase 2: delega para
+/// [`enqueue_internal`] com `origin = Local` e sem chave idempotente.
 #[tauri::command(rename_all = "snake_case")]
 pub fn queue_enqueue(
     app: tauri::AppHandle,
@@ -352,20 +433,177 @@ pub fn queue_enqueue(
     source: PipelineSource,
     options: Option<PipelineOptions>,
 ) -> Result<QueueItem, String> {
-    if !Path::new(&input_path).exists() {
+    enqueue_internal(
+        &app,
+        input_path,
+        source,
+        options,
+        JobOrigin::Local,
+        None,
+        None,
+        None,
+    )
+}
+
+/// Enfileira um item (local ou remoto). Fase 2:
+/// - **Idempotência**: se `client_job_id` já existe em QUALQUER estado, devolve
+///   o item existente em vez de duplicar (o app pode reenviar após uma queda).
+/// - URL remota não exige arquivo local; as demais origens validam o caminho.
+#[allow(clippy::too_many_arguments)]
+pub fn enqueue_internal(
+    app: &tauri::AppHandle,
+    input_path: String,
+    source: PipelineSource,
+    options: Option<PipelineOptions>,
+    origin: JobOrigin,
+    client_job_id: Option<String>,
+    anime_key: Option<String>,
+    episode: Option<i64>,
+) -> Result<QueueItem, String> {
+    if let Some(cid) = client_job_id.as_deref() {
+        let items = job_queue().items.lock().unwrap();
+        if let Some(idx) = find_index_by_client_job_id(items.as_slice(), cid) {
+            return Ok(items[idx].clone());
+        }
+    }
+    // Origens sem arquivo local: URL remota e SRT inline (Fase 5). Upload
+    // valida o arquivo enviado; Audio/Embedded validam o vídeo local.
+    if source_needs_local_file(&source) && !Path::new(&input_path).exists() {
         return Err(format!("arquivo não encontrado: `{input_path}`"));
     }
-    let item = QueueItem::new(
+    let mut item = QueueItem::new(
         next_job_id(),
         input_path,
         source,
         options.unwrap_or_default(),
     );
+    item.origin = origin;
+    item.client_job_id = client_job_id;
+    item.anime_key = anime_key;
+    item.episode = episode;
     job_queue().items.lock().unwrap().push(item.clone());
-    ensure_workers(&app);
+    ensure_workers(app);
     job_queue().wake.notify_all();
-    emit_queue_updated(&app);
+    emit_queue_updated(app);
+    save_snapshot();
     Ok(item)
+}
+
+/// Origens que exigem um arquivo local existente no PC: trilha de áudio local,
+/// legenda embutida e upload de áudio (Fase 5). URL e SRT inline não.
+fn source_needs_local_file(source: &PipelineSource) -> bool {
+    matches!(
+        source,
+        PipelineSource::Audio { .. }
+            | PipelineSource::Embedded { .. }
+            | PipelineSource::Upload { .. }
+    )
+}
+
+/// Índice do item com o `client_job_id` dado (chave idempotente), se houver
+/// (Fase 2). Testável sem `AppHandle`.
+fn find_index_by_client_job_id(items: &[QueueItem], client_job_id: &str) -> Option<usize> {
+    items
+        .iter()
+        .position(|i| i.client_job_id.as_deref() == Some(client_job_id))
+}
+
+/// Caminho do snapshot persistido da fila (`config_dir/legendai/queue.json`).
+fn queue_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("legendai").join("queue.json"))
+}
+
+/// Snapshot serializável dos itens ativos (`pending`/`running`) — Fase 2.
+fn snapshot_active(items: &[QueueItem]) -> Vec<PersistedItem> {
+    items
+        .iter()
+        .filter(|i| matches!(i.state, QueueState::Pending | QueueState::Running))
+        .map(|i| PersistedItem {
+            id: i.id.clone(),
+            input_path: i.input_path.clone(),
+            source: i.source.clone(),
+            options: i.options.clone(),
+            origin: i.origin,
+            client_job_id: i.client_job_id.clone(),
+            anime_key: i.anime_key.clone(),
+            episode: i.episode,
+            created_ms: i.created_ms,
+        })
+        .collect()
+}
+
+/// Grava o snapshot dos itens ativos (best-effort: erro só loga — a fila em
+/// memória continua válida). Escrita atômica (temp + rename).
+fn save_snapshot() {
+    let Some(path) = queue_path() else { return };
+    let snapshot = {
+        let guard = job_queue().items.lock().unwrap();
+        snapshot_active(guard.as_slice())
+    };
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            tracing::error!("não foi possível criar o diretório da fila: {e}");
+            return;
+        }
+    }
+    match serde_json::to_vec_pretty(&snapshot) {
+        Ok(bytes) => {
+            let tmp = path.with_extension("json.tmp");
+            if let Err(e) = std::fs::write(&tmp, bytes).and_then(|_| std::fs::rename(&tmp, &path)) {
+                tracing::error!("não foi possível persistir a fila: {e}");
+            }
+        }
+        Err(e) => tracing::error!("falha ao serializar a fila: {e}"),
+    }
+}
+
+/// Reconstrói um item persistido como `pending` (itens `running` viram
+/// `pending` ao recarregar — o processamento foi interrompido pelo restart).
+fn restored_item(p: PersistedItem) -> QueueItem {
+    let mut item = QueueItem::new(p.id, p.input_path, p.source, p.options);
+    item.state = QueueState::Pending;
+    item.origin = p.origin;
+    item.client_job_id = p.client_job_id;
+    item.anime_key = p.anime_key;
+    item.episode = p.episode;
+    if p.created_ms > 0 {
+        item.created_ms = p.created_ms;
+    }
+    item
+}
+
+/// Recarrega o snapshot do disco no boot e re-enfileira os itens ativos
+/// (`running` → `pending`). Chamado no `setup`, após o servidor de rede subir.
+pub fn restore(app: &tauri::AppHandle) {
+    let Some(path) = queue_path() else { return };
+    let Ok(raw) = std::fs::read(&path) else {
+        return;
+    };
+    let snapshot: Vec<PersistedItem> = match serde_json::from_slice(&raw) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("fila persistida inválida em `{}`: {e}", path.display());
+            return;
+        }
+    };
+    if snapshot.is_empty() {
+        return;
+    }
+    let restored: Vec<QueueItem> = snapshot.into_iter().map(restored_item).collect();
+    let count = restored.len();
+    {
+        let mut items = job_queue().items.lock().unwrap();
+        // Evita duplicar se `restore` for chamado duas vezes.
+        for item in restored {
+            if !items.iter().any(|i| i.id == item.id) {
+                items.push(item);
+            }
+        }
+    }
+    ensure_workers(app);
+    job_queue().wake.notify_all();
+    emit_queue_updated(app);
+    tracing::info!("fila restaurada do disco: {count} item(ns) ativo(s)");
 }
 
 /// Cancela o item em execução (cooperativo: para na próxima checagem do token
@@ -399,6 +637,7 @@ pub fn queue_remove(app: tauri::AppHandle, id: String) -> Result<(), String> {
     }
     drop(items);
     emit_queue_updated(&app);
+    save_snapshot();
     Ok(())
 }
 
@@ -617,5 +856,139 @@ mod tests {
         assert!(!token_b.is_cancelled());
         // Limpeza para não vazar estado entre testes.
         clear_queue();
+    }
+
+    #[test]
+    fn idempotencia_encontra_item_por_client_job_id() {
+        let mut a = sample_item("a", QueueState::Pending);
+        a.client_job_id = Some("goanime:X:1:ja".into());
+        let mut b = sample_item("b", QueueState::Done);
+        b.client_job_id = Some("goanime:Y:2:ja".into());
+        let items = vec![a, b];
+        assert_eq!(
+            find_index_by_client_job_id(&items, "goanime:Y:2:ja"),
+            Some(1)
+        );
+        assert_eq!(find_index_by_client_job_id(&items, "inexistente"), None);
+        // Itens sem chave (locais) nunca casam.
+        assert_eq!(find_index_by_client_job_id(&items, ""), None);
+    }
+
+    #[test]
+    fn snapshot_persiste_so_itens_ativos() {
+        let mut pending = sample_item("p", QueueState::Pending);
+        pending.client_job_id = Some("cid-p".into());
+        pending.origin = JobOrigin::Remote;
+        let running = sample_item("r", QueueState::Running);
+        let done = sample_item("d", QueueState::Done);
+        let error = sample_item("e", QueueState::Error);
+        let items = vec![pending, running, done, error];
+        let snap = snapshot_active(&items);
+        assert_eq!(snap.len(), 2, "só pending/running persistem");
+        assert_eq!(snap[0].id, "p");
+        assert_eq!(snap[0].origin, JobOrigin::Remote);
+        assert_eq!(snap[0].client_job_id.as_deref(), Some("cid-p"));
+        assert_eq!(snap[1].id, "r");
+    }
+
+    #[test]
+    fn restored_item_vira_pending_e_preserva_metadados() {
+        let item = restored_item(PersistedItem {
+            id: "j-restore".into(),
+            input_path: "https://cdn/a.m3u8".into(),
+            source: PipelineSource::Url {
+                url: "https://cdn/a.m3u8".into(),
+                headers: Default::default(),
+            },
+            options: PipelineOptions::default(),
+            origin: JobOrigin::Remote,
+            client_job_id: Some("cid".into()),
+            anime_key: Some("Bocchi".into()),
+            episode: Some(3),
+            created_ms: 123,
+        });
+        assert_eq!(item.state, QueueState::Pending);
+        assert_eq!(item.id, "j-restore");
+        assert_eq!(item.origin, JobOrigin::Remote);
+        assert_eq!(item.created_ms, 123);
+        assert_eq!(item.episode, Some(3));
+        assert!(matches!(item.source, PipelineSource::Url { .. }));
+    }
+
+    #[test]
+    fn origem_exige_arquivo_local_para_audio_embedded_e_upload() {
+        assert!(source_needs_local_file(&PipelineSource::Audio {
+            track_index: 0
+        }));
+        assert!(source_needs_local_file(&PipelineSource::Embedded {
+            stream_index: 0
+        }));
+        assert!(source_needs_local_file(&PipelineSource::Upload {
+            path: "/tmp/a.pcm".into(),
+            format: Some("s16le".into()),
+        }));
+        // URL remota e SRT inline não dependem de arquivo local.
+        assert!(!source_needs_local_file(&PipelineSource::Url {
+            url: "https://cdn/a.m3u8".into(),
+            headers: Default::default(),
+        }));
+        assert!(!source_needs_local_file(&PipelineSource::InlineSrt {
+            srt: "1\n00:00:01,000 --> 00:00:02,000\nOi\n".into(),
+            source_lang: Some("en".into()),
+        }));
+    }
+
+    #[test]
+    fn snapshot_faz_round_trip_de_upload_e_srt() {
+        let mut upload = sample_item("up", QueueState::Pending);
+        upload.source = PipelineSource::Upload {
+            path: "/tmp/legendai-upload.pcm".into(),
+            format: Some("s16le".into()),
+        };
+        let srt_item = QueueItem::new(
+            "srt".into(),
+            "inline-srt:cid".into(),
+            PipelineSource::InlineSrt {
+                srt: "1\n00:00:01,000 --> 00:00:02,000\nHi\n".into(),
+                source_lang: Some("en".into()),
+            },
+            PipelineOptions::default(),
+        );
+        let snap = snapshot_active(&[upload, srt_item]);
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: Vec<PersistedItem> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 2);
+        assert!(matches!(
+            back[0].source,
+            PipelineSource::Upload { ref path, format: Some(ref f) }
+                if path == "/tmp/legendai-upload.pcm" && f == "s16le"
+        ));
+        assert!(matches!(
+            back[1].source,
+            PipelineSource::InlineSrt { ref srt, source_lang: Some(ref l) }
+                if srt.contains("Hi") && l == "en"
+        ));
+    }
+
+    #[test]
+    fn snapshot_faz_round_trip_json() {
+        let mut item = sample_item("j1", QueueState::Running);
+        item.client_job_id = Some("cid".into());
+        item.origin = JobOrigin::Remote;
+        item.anime_key = Some("Anime".into());
+        item.episode = Some(5);
+        let snap = snapshot_active(&[item]);
+        let json = serde_json::to_string(&snap).unwrap();
+        let back: Vec<PersistedItem> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].client_job_id.as_deref(), Some("cid"));
+        assert_eq!(back[0].anime_key.as_deref(), Some("Anime"));
+        assert_eq!(back[0].episode, Some(5));
+        assert_eq!(back[0].origin, JobOrigin::Remote);
+        // `source`/`options` sobrevivem à persistência (o worker precisa deles).
+        assert!(matches!(
+            back[0].source,
+            PipelineSource::Audio { track_index: 0 }
+        ));
     }
 }
