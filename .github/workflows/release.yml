@@ -528,11 +528,24 @@ jobs:
       - name: Fetch ffmpeg/ffprobe sidecars (linux64)
         run: bash scripts/fetch-ffmpeg.sh linux64
 
-      - name: Build deb and AppImage
+      - name: Build app without bundle
         run: |
-          # Gera deb + AppImage (AppImage já tem APPIMAGE_EXTRACT_AND_RUN=1 e NO_STRIP=true no env do job para evitar "failed to run linuxdeploy"/FUSE/strip)
+          # 1a fase: compila com o ambiente do job (CUDA na variante nvidia,
+          # Vulkan na amd-intel). O bundle é um passo separado para limpar o
+          # LD_LIBRARY_PATH antes do linuxdeploy (ver passo seguinte).
           # onnxruntime.dll injection is Windows-only (see the windows job).
-          npm run tauri build -- --features ${{ matrix.features }} --bundles deb,appimage
+          npm run tauri build -- --features ${{ matrix.features }} --no-bundle
+
+      - name: Bundle deb and AppImage
+        run: |
+          # 2a fase: empacota. A variante nvidia instala o CUDA toolkit, que
+          # deixa LD_LIBRARY_PATH=/usr/local/cuda-13.2/lib64: no ambiente; o
+          # linuxdeploy (AppImage extraído via APPIMAGE_EXTRACT_AND_RUN=1, já
+          # com NO_STRIP=true) não executa com esse path e o bundle falha com
+          # "failed to run linuxdeploy". Como a compilação já terminou no passo
+          # anterior, limpamos o LD_LIBRARY_PATH só para o empacotamento (o
+          # linuxdeploy não precisa de CUDA; o EP CUDA é carregado em runtime).
+          env -u LD_LIBRARY_PATH npm run tauri build -- --features ${{ matrix.features }} --bundles deb,appimage
 
       - name: Rename packages with variant suffix
         run: |
