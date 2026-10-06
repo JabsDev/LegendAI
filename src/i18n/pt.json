@@ -271,6 +271,8 @@
   "net.qrTitle": "QR de pareamento",
   "net.qrHint": "No celular, aponte a câmera para o código. Na TV (sem câmera), digite o endereço mostrado acima.",
   "net.qrUnavailable": "QR indisponível — o servidor precisa estar ligado.",
+  "net.tailscaleTitle": "QR do Tailscale",
+  "net.tailscaleHint": "Use este endereço/QR quando o roteador isola a rede Ethernet do Wi-Fi. No app, pareie com o IP 100.x (Tailscale ligado nos dois aparelhos).",
   "net.remoteJobs": "Jobs do app (remotos)",
   "net.remoteHint": "Itens enviados pelo GoAnime TV pela rede local.",
   "net.refresh": "Atualizar",

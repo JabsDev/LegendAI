@@ -89,11 +89,20 @@ pub struct ServerIdentity {
     pub name: String,
     pub host: String,
     pub port: u16,
+    /// IP do Tailscale (`100.64.0.0/10`), quando ativo — segunda rota de
+    /// pareamento para redes com isolamento Ethernet/Wi-Fi.
+    pub tailscale_host: Option<String>,
 }
 
 impl ServerIdentity {
     fn url(&self) -> String {
         format!("http://{}:{}", self.host, self.port)
+    }
+
+    fn tailscale_url(&self) -> Option<String> {
+        self.tailscale_host
+            .as_ref()
+            .map(|h| format!("http://{h}:{}", self.port))
     }
 }
 
@@ -275,6 +284,8 @@ async fn info(State(state): State<ApiState>) -> Json<InfoView> {
         protocol: PROTOCOL,
         version: env!("CARGO_PKG_VERSION").into(),
         url: state.identity.url(),
+        tailscale_host: state.identity.tailscale_host.clone(),
+        tailscale_url: state.identity.tailscale_url(),
     })
 }
 
@@ -550,6 +561,7 @@ mod tests {
             name: "PC-Jabs".into(),
             host: "192.168.2.109".into(),
             port: 8765,
+            tailscale_host: Some("100.125.210.81".into()),
         }
     }
 
@@ -629,6 +641,9 @@ mod tests {
         let v = json(&body);
         assert_eq!(v["url"], "http://192.168.2.109:8765");
         assert_eq!(v["protocol"], PROTOCOL);
+        // Rota Tailscale exposta para parear com isolamento de rede.
+        assert_eq!(v["tailscale_host"], "100.125.210.81");
+        assert_eq!(v["tailscale_url"], "http://100.125.210.81:8765");
     }
 
     #[tokio::test]

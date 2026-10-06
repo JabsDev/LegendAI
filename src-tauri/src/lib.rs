@@ -172,7 +172,9 @@ pub fn run() {
             #[cfg(feature = "stt")]
             net::net_set_port,
             #[cfg(feature = "stt")]
-            net::net_qr_svg
+            net::net_qr_svg,
+            #[cfg(feature = "stt")]
+            net::net_qr_svg_for
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

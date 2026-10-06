@@ -61,6 +61,34 @@ pub fn local_ip() -> IpAddr {
     .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
 }
 
+/// IP do Tailscale (`100.64.0.0/10`), se houver interface ativa.
+///
+/// Serve para oferecer um segundo endereço/QR de pareamento quando o roteador
+/// isola as redes Ethernet/Wi-Fi (client isolation/VLANs): PC e celular se
+/// alcançam pelo IP `100.x` do tailnet, independente do roteador. `None` se o
+/// Tailscale não estiver ativo (aí só há a rota LAN).
+pub fn tailscale_ip() -> Option<IpAddr> {
+    let networks = sysinfo::Networks::new_with_refreshed_list();
+    networks
+        .list()
+        .values()
+        .flat_map(|n| n.ip_networks().iter())
+        .map(|ipn| ipn.addr)
+        .find(is_tailscale_v4)
+}
+
+/// `100.64.0.0/10` (CGNAT — faixa usada pelo Tailscale). Não é roteável na
+/// internet pública.
+fn is_tailscale_v4(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 100 && (64..=127).contains(&o[1])
+        }
+        IpAddr::V6(_) => false,
+    }
+}
+
 /// Sobe o servidor HTTP. Retorna o [`ServerInfo`] previsto (o bind em si é
 /// assíncrono — falhas de porta ficam no log). O servidor fica ativo até o app
 /// encerrar.
@@ -72,6 +100,7 @@ pub fn start(app: AppHandle, cfg: &NetConfig) -> Result<ServerInfo, String> {
         name: server_name(cfg),
         host: local_ip().to_string(),
         port: cfg.port,
+        tailscale_host: tailscale_ip().map(|ip| ip.to_string()),
     };
     let info = ServerInfo {
         name: identity.name.clone(),
@@ -114,13 +143,21 @@ pub fn info() -> Option<ServerInfo> {
 
 /// `Some(InfoView)` quando o servidor está ativo.
 pub fn info_view() -> Option<dto::InfoView> {
-    info().map(|i| dto::InfoView {
-        url: format!("http://{}:{}", i.host, i.port),
-        name: i.name,
-        host: i.host,
-        port: i.port,
-        protocol: dto::PROTOCOL,
-        version: env!("CARGO_PKG_VERSION").into(),
+    info().map(|i| {
+        let tailscale_host = tailscale_ip().map(|ip| ip.to_string());
+        let tailscale_url = tailscale_host
+            .as_ref()
+            .map(|h| format!("http://{h}:{}", i.port));
+        dto::InfoView {
+            url: format!("http://{}:{}", i.host, i.port),
+            name: i.name,
+            host: i.host,
+            port: i.port,
+            protocol: dto::PROTOCOL,
+            version: env!("CARGO_PKG_VERSION").into(),
+            tailscale_host,
+            tailscale_url,
+        }
     })
 }
 
@@ -176,6 +213,18 @@ pub fn net_qr_svg() -> Result<String, String> {
     qr_svg(&info.url)
 }
 
+/// Comando IPC: QR (SVG) de uma URL de pareamento alternativa — hoje o
+/// endereço Tailscale (`http://100.x:porta`) mostrado na aba Rede. Só aceita
+/// `http(s)://` para não virar um gerador de QR arbitrário.
+#[tauri::command(rename_all = "snake_case")]
+pub fn net_qr_svg_for(url: String) -> Result<String, String> {
+    let trimmed = url.trim();
+    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
+        return Err("URL de pareamento inválida".into());
+    }
+    qr_svg(trimmed)
+}
+
 /// Renderiza um texto como QR em SVG. Público para reuso/testes.
 pub fn qr_svg(payload: &str) -> Result<String, String> {
     let code = qrcode::QrCode::new(payload.as_bytes()).map_err(|e| e.to_string())?;
@@ -203,5 +252,27 @@ mod tests {
     fn qr_svg_aceita_url_legendai() {
         // O app aceita tanto http quanto o esquema legendai:// (Fase 4).
         assert!(qr_svg("legendai://v1/pair?host=192.168.2.109&port=8765").is_ok());
+    }
+
+    #[test]
+    fn tailscale_v4_reconhece_a_faixa_cgnat() {
+        assert!(is_tailscale_v4(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))));
+        assert!(is_tailscale_v4(&IpAddr::V4(Ipv4Addr::new(
+            100, 127, 255, 254
+        ))));
+        // Bordas fora da faixa 100.64.0.0/10.
+        assert!(!is_tailscale_v4(&IpAddr::V4(Ipv4Addr::new(100, 63, 0, 1))));
+        assert!(!is_tailscale_v4(&IpAddr::V4(Ipv4Addr::new(100, 128, 0, 1))));
+        assert!(!is_tailscale_v4(&IpAddr::V4(Ipv4Addr::new(
+            192, 168, 2, 109
+        ))));
+    }
+
+    #[test]
+    fn qr_for_aceita_http_e_rejeita_outros_esquemas() {
+        assert!(net_qr_svg_for("http://100.125.210.81:8765".into()).is_ok());
+        assert!(net_qr_svg_for("https://pc.tailnet.ts.net".into()).is_ok());
+        assert!(net_qr_svg_for("ftp://x".into()).is_err());
+        assert!(net_qr_svg_for("nada".into()).is_err());
     }
 }

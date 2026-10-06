@@ -271,6 +271,8 @@
   "net.qrTitle": "Pairing QR",
   "net.qrHint": "On a phone, point the camera at the code. On a TV (no camera), type the address shown above.",
   "net.qrUnavailable": "QR unavailable — the server must be on.",
+  "net.tailscaleTitle": "Tailscale QR",
+  "net.tailscaleHint": "Use this address/QR when your router isolates the Ethernet network from Wi-Fi. In the app, pair with the 100.x IP (Tailscale running on both devices).",
   "net.remoteJobs": "App jobs (remote)",
   "net.remoteHint": "Items sent by GoAnime TV over the local network.",
   "net.refresh": "Refresh",

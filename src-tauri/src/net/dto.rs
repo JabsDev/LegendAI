@@ -167,6 +167,10 @@ pub struct HealthView {
 }
 
 /// `GET /v1/info` — dados de pareamento (QR).
+///
+/// `tailscale_host`/`tailscale_url` aparecem quando há uma interface Tailscale
+/// ativa (`100.64.0.0/10`). É a rota para parear quando o roteador isola as
+/// redes Ethernet/Wi-Fi: o app aceita o IP `100.x` e fala com o PC pela VPN.
 #[derive(Debug, Clone, Serialize)]
 pub struct InfoView {
     pub name: String,
@@ -175,6 +179,10 @@ pub struct InfoView {
     pub protocol: u32,
     pub version: String,
     pub url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tailscale_host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tailscale_url: Option<String>,
 }
 
 /// Entrada do catálogo em `GET /v1/models` (diagnóstico).

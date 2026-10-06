@@ -23,6 +23,8 @@
     protocol: number;
     version: string;
     url: string;
+    tailscale_host?: string | null;
+    tailscale_url?: string | null;
   }
 
   interface QueueItem {
@@ -53,6 +55,8 @@
   let info = $state<NetInfo | null>(null);
   let qrSvg = $state("");
   let qrError = $state("");
+  let qrTailscaleSvg = $state("");
+  let qrTailscaleError = $state("");
   let portInput = $state<string | number>("");
   let busy = $state(false);
   let notice = $state("");
@@ -61,6 +65,9 @@
 
   const remoteItems = $derived(items.filter((i) => i.origin === "remote"));
   const qrSrc = $derived(qrSvg ? `data:image/svg+xml,${encodeURIComponent(qrSvg)}` : "");
+  const qrTailscaleSrc = $derived(
+    qrTailscaleSvg ? `data:image/svg+xml,${encodeURIComponent(qrTailscaleSvg)}` : "",
+  );
 
   onMount(() => {
     const u = listen<QueueItem[]>("queue-updated", (ev) => {
@@ -95,9 +102,23 @@
           qrSvg = "";
           qrError = String(e);
         }
+        if (info?.tailscale_url) {
+          try {
+            qrTailscaleSvg = await invoke<string>("net_qr_svg_for", {
+              url: info.tailscale_url,
+            });
+            qrTailscaleError = "";
+          } catch (e) {
+            qrTailscaleSvg = "";
+            qrTailscaleError = String(e);
+          }
+        } else {
+          qrTailscaleSvg = "";
+        }
       } else {
         info = null;
         qrSvg = "";
+        qrTailscaleSvg = "";
       }
     } catch (e) {
       showError(e);
@@ -119,6 +140,17 @@
       notice = t("net.copied");
     } catch {
       notice = status.url;
+    }
+    setTimeout(() => (notice = ""), 2500);
+  }
+
+  async function copyTailscale(): Promise<void> {
+    if (!info?.tailscale_url) return;
+    try {
+      await navigator.clipboard.writeText(info.tailscale_url);
+      notice = t("net.copied");
+    } catch {
+      notice = info.tailscale_url;
     }
     setTimeout(() => (notice = ""), 2500);
   }
@@ -215,6 +247,23 @@
       </div>
     {:else}
       <p class="warn">{qrError || t("net.qrUnavailable")}</p>
+    {/if}
+
+    {#if info?.tailscale_url}
+      <hr class="sep" />
+      <h3>{t("net.tailscaleTitle")}</h3>
+      <p class="hint">{t("net.tailscaleHint")}</p>
+      <div class="row">
+        <code class="addr">{info.tailscale_url}</code>
+        <button type="button" onclick={copyTailscale}>{t("net.copy")}</button>
+      </div>
+      {#if qrTailscaleSrc}
+        <div class="qr" aria-label={t("net.tailscaleTitle")}>
+          <img src={qrTailscaleSrc} alt={t("net.tailscaleTitle")} />
+        </div>
+      {:else}
+        <p class="warn">{qrTailscaleError || t("net.qrUnavailable")}</p>
+      {/if}
     {/if}
   </div>
 
@@ -354,6 +403,13 @@
 
   .warn {
     color: var(--warning);
+  }
+
+  .sep {
+    border: none;
+    border-top: 1px solid var(--border);
+    width: 100%;
+    margin: var(--space-2) 0;
   }
 
   .port {
